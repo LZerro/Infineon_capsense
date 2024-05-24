@@ -1,13 +1,13 @@
 /***************************************************************************//**
 * \file cy_capsense_gesture_lib.h
-* \version 5.0
+* \version 3.0
 *
 * \brief
 * Provides the gesture interface.
 *
 ********************************************************************************
 * \copyright
-* Copyright 2018-2024, Cypress Semiconductor Corporation (an Infineon company)
+* Copyright 2018-2021, Cypress Semiconductor Corporation (an Infineon company)
 * or an affiliate of Cypress Semiconductor Corporation. All rights reserved.
 * You may use this file only in accordance with the license, terms, conditions,
 * disclaimers, and limitations in the end user license agreement accompanying
@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 
-#if (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3) || defined(CY_IP_M0S8MSCV3LP))
+#if (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3))
 
 #if defined(__cplusplus)
 extern "C" {
@@ -48,7 +48,6 @@ typedef struct
     uint16_t clickTimeoutMin;                                   /**< Click minimum timeout */
     uint16_t secondClickIntervalMax;                            /**< Second Click maximum interval */
     uint16_t secondClickIntervalMin;                            /**< Second Click minimum interval */
-    uint16_t longPressTimeoutMin;                               /**< Long Press minimum timeout */
 
     /* Distance */
     uint16_t zoomDistanceMin;                                   /**< Zoom minimum distance */
@@ -58,7 +57,6 @@ typedef struct
     uint16_t edgeDistanceMin;                                   /**< Edge Swipe minimum distance */
     uint8_t secondClickDistanceMax;                             /**< Second Click maximum distance */
     uint8_t clickDistanceMax;                                   /**< Click maximum distance */
-    uint8_t longPressDistanceMax;                               /**< Long Press maximum distance */
 
     /* Debounce */
     uint8_t zoomDebounce;                                       /**< Zoom debounce */
@@ -167,14 +165,6 @@ typedef struct
     uint8_t debounce;                                           /**< Gesture debounce counter */
 } cy_stc_capsense_ofrt_context_t;
 
-/** Gesture One Finger Long Press context structure */
-typedef struct
-{
-    uint32_t touchStartTime1;                                   /**< Touchdown time */
-    cy_stc_capsense_gesture_position_t touchStartPosition1;     /**< Touchdown position */
-    uint8_t state;                                              /**< Gesture state */
-} cy_stc_capsense_oflp_context_t;
-
 /** Gesture global context structure */
 typedef struct
 {
@@ -197,7 +187,6 @@ typedef struct
     cy_stc_capsense_ofdc_context_t ofdcContext;                 /**< One-finger double click gesture context */
     cy_stc_capsense_ofcd_context_t ofcdContext;                 /**< One-finger click and drag gesture context */
     cy_stc_capsense_tfsl_context_t tfslContext;                 /**< Two-finger scroll gesture context */
-    cy_stc_capsense_oflp_context_t oflpContext;                 /**< One-finger long press gesture context */
 
     uint8_t numPosition;                                        /**< Current number of touches */
     uint8_t numPositionLast;                                    /**< Previous number of touches */
@@ -273,7 +262,7 @@ void Cy_CapSense_Gesture_Decode(
 /** No gesture detected */
 #define CY_CAPSENSE_GESTURE_NO_GESTURE                      (0x00u)
 /** All gestures enable / detection mask */
-#define CY_CAPSENSE_GESTURE_ALL_GESTURES_MASK               (0x07FFu)
+#define CY_CAPSENSE_GESTURE_ALL_GESTURES_MASK               (0x03FFu)
 /** Gesture enable filtering mask */
 #define CY_CAPSENSE_GESTURE_FILTERING_MASK                  (0x8000u)
 /** Detection mask of Touchdown */
@@ -301,8 +290,6 @@ void Cy_CapSense_Gesture_Decode(
 #define CY_CAPSENSE_GESTURE_ONE_FNGR_ROTATE_MASK            (0x0100u)
 /** Enable / detection mask of two-finger zoom gesture */
 #define CY_CAPSENSE_GESTURE_TWO_FNGR_ZOOM_MASK              (0x0200u)
-/** Enable / detection mask of one-finger long press gesture */
-#define CY_CAPSENSE_GESTURE_ONE_FNGR_LONG_PRESS_MASK        (0x0400u)
 
 /* Direction Offsets */
 /** Offset of direction of one-finger scroll gesture */
@@ -369,7 +356,7 @@ void Cy_CapSense_Gesture_Decode(
 }
 #endif
 
-#endif /* (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3) || defined(CY_IP_M0S8MSCV3LP)) */
+#endif /* (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3)) */
 
 #endif /* CY_CAPSENSE_GESTURE_LIB_H */
 

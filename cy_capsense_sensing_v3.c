@@ -1,6 +1,6 @@
 /***************************************************************************//**
 * \file cy_capsense_sensing_v3.c
-* \version 5.0
+* \version 3.0
 *
 * \brief
 * This file contains the source of functions common for different scanning
@@ -8,7 +8,7 @@
 *
 ********************************************************************************
 * \copyright
-* Copyright 2020-2024, Cypress Semiconductor Corporation (an Infineon company)
+* Copyright 2020-2021, Cypress Semiconductor Corporation (an Infineon company)
 * or an affiliate of Cypress Semiconductor Corporation. All rights reserved.
 * You may use this file only in accordance with the license, terms, conditions,
 * disclaimers, and limitations in the end user license agreement accompanying
@@ -44,49 +44,12 @@
 #define CY_CAPSENSE_CSD_CCOMP_CALC_DIV      (4u * CY_CAPSENSE_PERCENTAGE_100)
 #define CY_CAPSENSE_CSX_CCOMP_CALC_DIV      (8u * CY_CAPSENSE_PERCENTAGE_100)
 
-/* CIC2 Filter Divider */
-#define CY_CAPSENSE_CIC2_DIVIDER_1          (1u)
-#define CY_CAPSENSE_CIC2_DIVIDER_2          (2u)
-#define CY_CAPSENSE_CIC2_DIVIDER_4          (4u)
-#define CY_CAPSENSE_CIC2_DIVIDER_8          (8u)
-#define CY_CAPSENSE_CIC2_DIVIDER_16         (16u)
+/* Defines the KREF_PRS correcting shift, taking into account Sense Clock Divider
+ * adjustment in scope of the Cy_CapSense_AdjustSnsClkDivider()
+ * routine.
+ */
+#define CY_CAPSENSE_PRS_SNS_KREF_SHIFT      (1u)
 
-/* CIC2 Accumulator parameters */
-#define CY_CAPSENSE_CIC2_ACC_BIT_NUM        (20u)
-#define CY_CAPSENSE_CIC2_ACC_MAX_VAL        ((1uL << CY_CAPSENSE_CIC2_ACC_BIT_NUM) - 1u)
-
-/* The minimum allowed value of CDAC compensation divider */
-#define CY_CAPSENSE_CDAC_COMP_DIV_MIN_MSCV3 (3u)
-
-/* 
-* Raw count value equals to appropriate sensor capacitance with dithering configuration. 
-* Calculated according to the equation:
-* rawCount = (snsCap * CY_CAPSENSE_CONVERSION_HECTO) / CY_CAPSENSE_REF_CDAC_LSB_X100;
-*/
-#define CY_CAPSENSE_DITHERING_SNS_CAP_300_FEMTO_RAW     (33u)
-#define CY_CAPSENSE_DITHERING_SNS_CAP_500_FEMTO_RAW     (56u)
-#define CY_CAPSENSE_DITHERING_SNS_CAP_1000_FEMTO_RAW    (112u)
-#define CY_CAPSENSE_DITHERING_SNS_CAP_3000_FEMTO_RAW    (338u)
-#define CY_CAPSENSE_DITHERING_SNS_CAP_5000_FEMTO_RAW    (564u)
-#define CY_CAPSENSE_DITHERING_SNS_CAP_10000_FEMTO_RAW   (1128u)
-
-/* CDAC dithering modes */
-#define CY_CAPSENSE_CDAC_DITHERING_MODE_DISABLE         (0x0u)
-#define CY_CAPSENSE_CDAC_DITHERING_MODE_MANUAL          (0x1u)
-#define CY_CAPSENSE_CDAC_DITHERING_MODE_AUTO            (0x2u)
-
-#define CY_CAPSENSE_CDAC_DITHERING_CDAC_REF             (100u)
-#define CY_CAPSENSE_CDAC_DITHERING_NUM_SUBCONV          (100u)
-#define CY_CAPSENSE_CDAC_DITHERING_COMP_DIV             (256u)
-#define CY_CAPSENSE_CDAC_DITHERING_KREF                 (256u)
-#define CY_CAPSENSE_CDAC_DITHERING_CLOCK_REF_RATE       (0x1u)
-
-/*
-* Watchdog time in mod clocks for CDAC auto-dithering scan is calculated according to the equation:
-* WdtTime = (INIT_CMOD + INIT_SHORT + PRO_DUMMY + NUM_SUBCONV * KREF + EPILOGUE) * 3.
-* The calculated value is the duration of one sample with the three-time margin.
-*/
-#define CY_CAPSENSE_CDAC_DITHERING_MOD_CLK_PERIODS      (85000u)
 
 /*******************************************************************************
 * Constants
@@ -147,8 +110,8 @@ void Cy_CapSense_SetMaxCompCdac(
 #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) */
 
 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-#if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE) ||\
-     (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE))
+#if((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE) ||\
+    (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE))
 void Cy_CapSense_AmuxUpdateCdacComp(
                 MSC_Type * base,
                 const cy_stc_capsense_sensor_context_t * ptrSnsContext);
@@ -164,28 +127,76 @@ void Cy_CapSense_AmuxStartScan(MSC_Type * base);
 #endif
 
 
-#if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN)
-static cy_capsense_status_t Cy_CapSense_CdacDitherScaleCalc(
-                cy_stc_capsense_context_t * context);
-static cy_capsense_status_t Cy_CapSense_ConfigureAutoDitherMode(
-                cy_stc_capsense_context_t * context);
-static cy_capsense_status_t Cy_CapSense_CdacDitherConfigScan(
-                MSC_Type * ptrHwBase,
-                uint32_t chId,
-                uint32_t slotId,
-                uint32_t snsFrameIdx,
-                cy_stc_capsense_context_t * context);
-#endif
-
-
 /** \} \endcond */
 
 
 /*******************************************************************************
-* Function Name: Cy_CapSense_ScanSlots_V3
+* Function Name: Cy_CapSense_ScanAllSlots
 ****************************************************************************//**
 *
-* Initiates the non-blocking scan of specified slots. 
+* Initiates the non-blocking scan of all slots. Scanning is
+* initiated only if no scan is in progress. Scan finishing can be
+* checked by the Cy_CapSense_IsBusy() function.
+*
+* This function initiates a scan only for the first slot for all channels
+* and then exits. Scans for the remaining slots in the Interrupt-driven scan mode
+* are initiated
+* in the interrupt service routine (part of middleware) triggered at the end
+* of each scan completion for each channel. If the syncMode field in the
+* cy_stc_capsense_common_config_t structure is set to CY_CAPSENSE_SYNC_MODE_OFF,
+* then the next slot scan for the channel with the fired interrupt,
+* will start regardless of the another channel readiness for the next scan.
+* If the syncMode field is set to CY_CAPSENSE_SYNC_INTERNAL (for single-chip projects)
+* or to CY_CAPSENSE_SYNC_EXTERNAL (for multi-chip projects),
+* then the next slot scan for the channel with the fired interrupt,
+* will start in lockstep with another channels after they all are ready
+* for the next scan (the next scan configuration is loaded into the channel MSC HW block).
+* Scans for the remaining slots in CS-DMA scan mode are initiated
+* by DMAC triggered at the end
+* of each scan completion for each channel. The channel scan synchronization is
+* performed as in Interrupt-driven scan mode. After all slots are scanned,
+* the FRAME interrupt is fired and the interrupt service routine (part of middleware)
+* updates the busy status.
+*
+* The status of the current scan should be
+* checked using the Cy_CapSense_IsBusy() function, where there are separate busy bits  for each
+* channel and the application program waits until all scans are finished
+* prior to starting a next scan by using this function.
+*
+* \note
+* This function is available only for the fifth-generation CAPSENSE&trade;.
+*
+* \param context
+* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
+*
+* \return
+* Returns the status of the operation:
+* - CY_CAPSENSE_STATUS_SUCCESS          - The operation is performed successfully.
+* - CY_CAPSENSE_STATUS_BAD_PARAM        - The input parameter is invalid.
+* - CY_CAPSENSE_STATUS_HW_BUSY          - The HW is busy with the previous scan.
+*
+*******************************************************************************/
+cy_capsense_status_t Cy_CapSense_ScanAllSlots(
+                cy_stc_capsense_context_t * context)
+{
+    cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
+
+    if (NULL != context)
+    {
+        capStatus = Cy_CapSense_ScanSlots(0u, CY_CAPSENSE_SLOT_COUNT, context);
+    }
+
+    return (capStatus);
+}
+
+
+/*******************************************************************************
+* Function Name: Cy_CapSense_ScanSlots
+****************************************************************************//**
+*
+* Initiates the non-blocking scan of specified slots. Scanning is
+* initiated only if no scan is in progress. Scan finishing can be
+* checked by the Cy_CapSense_IsBusy() function.
 *
 * This function initiates a scan only for the first specified slot for all channels
 * and then exits. Scans for the remaining slots in the interrupt-driven scan mode
@@ -211,11 +222,6 @@ static cy_capsense_status_t Cy_CapSense_CdacDitherConfigScan(
 * is performed without the MSC HW block reconfiguration. Also, in the AMUX mode
 * sensors are not disconnected.
 *
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
-*
 * \note
 * This function is available only for the fifth-generation CAPSENSE&trade;.
 *
@@ -235,7 +241,7 @@ static cy_capsense_status_t Cy_CapSense_CdacDitherConfigScan(
 * - CY_CAPSENSE_STATUS_HW_BUSY          - The HW is busy with the previous scan.
 *
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
+cy_capsense_status_t Cy_CapSense_ScanSlots(
                 uint32_t startSlotId,
                 uint32_t numberSlots,
                 cy_stc_capsense_context_t * context)
@@ -243,21 +249,19 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
     cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
 
     uint32_t curChIndex;
-    uint32_t startSlotIdLocal = startSlotId;
-    uint32_t numberSlotsLocal = numberSlots;
-    uint32_t lastSlot = startSlotIdLocal + numberSlotsLocal - 1u;
+    uint32_t lastSlot = startSlotId + numberSlots - 1u;
     const cy_stc_capsense_common_config_t * ptrCommonCfg;
     cy_stc_capsense_internal_context_t * ptrIntrCxt;
-    uint32_t slotValue;
-    uint32_t curSlotIndex;
     #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
         uint32_t wdIndex;
         uint32_t snsIndex;
+        uint32_t slotValue;
+        uint32_t curSlotIndex;
         uint32_t scanSlotIndexValid;
     #endif
 
-    #if ((CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) || \
-         (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD))
+    #if((CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) || \
+        (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD))
         uint32_t * ptrSensorFrame;
     #endif
 
@@ -265,43 +269,13 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
         uint32_t sensorFrame[CY_MSC_6_SNS_REGS] = {0u, 0u, 0u, 0u, 0u, 0u};
     #endif
 
-    if ((NULL != context) && (0u != numberSlotsLocal))
+    if ((NULL != context) && (0u != numberSlots))
     {
         if (CY_CAPSENSE_SLOT_COUNT > lastSlot)
         {
             ptrIntrCxt = context->ptrInternalContext;
             ptrCommonCfg = context->ptrCommonConfig;
 
-            #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                /* Finds the first enabled slot for scanning */
-                while (0u < numberSlotsLocal)
-                {
-                    if (0u != Cy_CapSense_IsSlotEnabled(startSlotIdLocal, context))
-                    {
-                        break;
-                    }
-                    startSlotIdLocal++;
-                    numberSlotsLocal--;
-                }
-                /* Finds the last valid slot */
-                while (0u < numberSlotsLocal)
-                {
-                    if (0u != Cy_CapSense_IsSlotEnabled(lastSlot, context))
-                    {
-                        break;
-                    }
-                    lastSlot--;
-                    numberSlotsLocal--;
-                }
-            #endif
-
-            #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                if (0u == numberSlotsLocal)
-                {
-                    capStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
-                }
-                else
-            #endif
             if (CY_CAPSENSE_NOT_BUSY != Cy_CapSense_IsBusy(context))
             {
                 /* Previous widget is being scanned. Return error. */
@@ -310,7 +284,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
             else
             {
                 if ((CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING == ptrIntrCxt->hwConfigState) &&
-                    (ptrIntrCxt->currentSlotIndex == startSlotIdLocal) && (1u == numberSlotsLocal) &&
+                    (ptrIntrCxt->currentSlotIndex == startSlotId) && (1u == numberSlots) &&
                     (0u == (context->ptrCommonContext->status & CY_CAPSENSE_MW_STATE_CALIBRATION_MASK)) &&
                     (ptrIntrCxt->scanSingleSlot == CY_CAPSENSE_SCAN_SNGL_SLOT))
                 {
@@ -318,7 +292,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                         /* Initiates the frame start for each channel in interrupt driven scan mode */
                         for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
                         {
-                            ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->FRAME_CMD =
+                          ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->FRAME_CMD =
                               MSC_FRAME_CMD_START_FRAME_Msk;
                         }
                     #endif /* (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
@@ -330,17 +304,17 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
 
                         if (NULL != ptrIntrCxt->ptrSSCallback)
                         {
-                            ptrIntrCxt->ptrSSCallback((cy_stc_capsense_active_scan_sns_t *)&context->ptrActiveScanSns[curChIndex]);
+                          ptrIntrCxt->ptrSSCallback((cy_stc_active_scan_sns_t *)&context->ptrActiveScanSns[curChIndex]);
                         }
 
                         #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                            ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->SNS_CTL = context->ptrInternalContext->snsCtlReg[curChIndex] |
+                            ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->SNS_CTL = context->ptrInternalContext->snsCtlReg[curChIndex] |
                                     (MSC_SNS_CTL_START_SCAN_Msk | MSC_SNS_CTL_LAST_Msk);
                         #endif
 
                         #if (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE)
                             context->ptrSensorFrameContext[((lastSlot + 1u +
-                                ((curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT)) *
+                                (curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT) *
                                     CY_MSC_6_SNS_REGS) - 1u] |= MSC_SNS_CTL_LAST_Msk;
                         #endif
                     }
@@ -349,11 +323,10 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                         /* Initiates the frame start for each channel in DMA driven scan mode */
                         for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
                         {
-                          ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->FRAME_CMD =
+                          ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->FRAME_CMD =
                               MSC_FRAME_CMD_START_FRAME_Msk;
                         }
                     #endif
-                    capStatus = CY_CAPSENSE_STATUS_SUCCESS;
                 }
                 else
                 {
@@ -374,39 +347,14 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
 
                         for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
                         {
-                            context->ptrActiveScanSns[curChIndex].currentChannelSlotIndex = (uint16_t)startSlotIdLocal;
+                            context->ptrActiveScanSns[curChIndex].currentChannelSlotIndex = (uint16_t)startSlotId;
                         }
 
                         #if (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                            /* Finds number of empty slots requested for scan within DMA raw array */
-                            slotValue = 0u;
-                            for (curSlotIndex = 0u; curSlotIndex < startSlotIdLocal; curSlotIndex++)
+                            if((ptrIntrCxt->currentSlotIndex != (uint16_t)startSlotId) ||
+                               (ptrIntrCxt->endSlotIndex != (uint16_t)lastSlot))
                             {
-                                if (0u == Cy_CapSense_IsSlotEnabled(curSlotIndex, context))
-                                {
-                                    slotValue++;
-                                }
-                            }
-
-                            /* Stores DMA raw array ID */
-                            ptrIntrCxt->firstValidSlot = (uint16_t)(startSlotIdLocal - slotValue);
-
-                            /* Finds number of valid slots to be scanned */
-                            slotValue = 0u;
-                            for (curSlotIndex = startSlotIdLocal; curSlotIndex < (lastSlot + 1u); curSlotIndex++)
-                            {
-                                if (0u != Cy_CapSense_IsSlotEnabled(curSlotIndex, context))
-                                {
-                                    slotValue++;
-                                }
-                            }
-
-                            if ((ptrIntrCxt->currentSlotIndex != (uint16_t)startSlotIdLocal) ||
-                               (ptrIntrCxt->endSlotIndex != (uint16_t)lastSlot) ||
-                               (ptrIntrCxt->numValidSlots != (uint16_t)slotValue))
-                            {
-                                ptrIntrCxt->numValidSlots = (uint16_t)slotValue;
-                                ptrIntrCxt->currentSlotIndex = (uint16_t)startSlotIdLocal;
+                                ptrIntrCxt->currentSlotIndex = (uint16_t)startSlotId;
                                 ptrIntrCxt->endSlotIndex = (uint16_t)lastSlot;
                                 /* Configure DMA resources for each channel */
                                 for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
@@ -416,18 +364,18 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                             }
                         #else /* (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
 
-                            ptrIntrCxt->currentSlotIndex = (uint16_t)startSlotIdLocal;
+                            ptrIntrCxt->currentSlotIndex = (uint16_t)startSlotId;
                             ptrIntrCxt->endSlotIndex = (uint16_t)lastSlot;
                             /* Initiates the frame start for each channel in interrupt driven scan mode */
                             for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
                             {
-                                ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->FRAME_CMD =
+                                ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->FRAME_CMD =
                                     MSC_FRAME_CMD_START_FRAME_Msk;
                             }
                         #endif /* (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
 
                         /* Set the single or multiple slot scan mode */
-                        if ((1u == numberSlotsLocal) &&
+                        if ((1u == numberSlots) &&
                             (0u == (context->ptrCommonContext->status & CY_CAPSENSE_MW_STATE_CALIBRATION_MASK)))
                         {
                             ptrIntrCxt->scanSingleSlot = CY_CAPSENSE_SCAN_SNGL_SLOT;
@@ -443,13 +391,13 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                             Cy_CapSense_SetBusyFlags(curChIndex, context);
 
                             #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                                curSlotIndex = startSlotIdLocal + ((curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT);
+                                curSlotIndex = startSlotId + ((curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT);
                                 slotValue = context->ptrScanSlots[curSlotIndex].wdId;
                                 scanSlotIndexValid = curSlotIndex;
-                                if (CY_CAPSENSE_SLOT_EMPTY == slotValue)
+                                if(CY_CAPSENSE_SLOT_EMPTY == slotValue)
                                 {
                                     #if (CY_CAPSENSE_TOTAL_CH_NUMBER > 1u)
-                                        if (curSlotIndex < CY_CAPSENSE_SLOT_COUNT)
+                                        if(curSlotIndex < CY_CAPSENSE_SLOT_COUNT)
                                         {
                                             scanSlotIndexValid += CY_CAPSENSE_SLOT_COUNT;
                                         }
@@ -462,7 +410,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                                 else if (CY_CAPSENSE_SLOT_SHIELD_ONLY <= slotValue)
                                 {
                                     scanSlotIndexValid = ((uint32_t)context->ptrScanSlots[curSlotIndex].snsId *
-                                                          CY_CAPSENSE_SLOT_COUNT) + startSlotIdLocal;
+                                                          CY_CAPSENSE_SLOT_COUNT) + startSlotId;
                                 }
                                 else
                                 {
@@ -479,7 +427,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                             #endif /* (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
 
                             #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-                                if ((slotValue != CY_CAPSENSE_SLOT_EMPTY) &&
+                                if((slotValue != CY_CAPSENSE_SLOT_EMPTY) &&
                                    (slotValue != CY_CAPSENSE_SLOT_SHIELD_ONLY))
                                 {
                                     /* Connect the widget first sensor electrodes */
@@ -489,18 +437,18 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                                 ptrSensorFrame = &sensorFrame[0u];
                                 (void)Cy_CapSense_GenerateSensorConfig(curChIndex, curSlotIndex, ptrSensorFrame, context);
                                 /* Configure the last slot */
-                                if (1u == numberSlotsLocal)
+                                if (1u == numberSlots)
                                 {
                                     sensorFrame[CY_CAPSENSE_SNS_CTL_INDEX] |= MSC_SNS_CTL_LAST_Msk;
                                 }
                             #else /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) */
                                 /* Configure the last slot for each channel */
                                 context->ptrSensorFrameContext[((lastSlot + 1u +
-                                    ((curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT)) *
+                                    (curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT) *
                                         CY_MSC_6_SNS_REGS) - 1u] |= MSC_SNS_CTL_LAST_Msk;
 
                                 #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                                    ptrSensorFrame = &context->ptrSensorFrameContext[(startSlotIdLocal +
+                                    ptrSensorFrame = &context->ptrSensorFrameContext[(startSlotId +
                                             ((curChIndex + ptrCommonCfg->channelOffset) * CY_CAPSENSE_SLOT_COUNT)) *
                                                                                      CY_MSC_6_SNS_REGS];
                                 #endif
@@ -509,14 +457,14 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                             if (NULL != ptrIntrCxt->ptrSSCallback)
                             {
                                 #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                                    ptrIntrCxt->ptrSSCallback((cy_stc_capsense_active_scan_sns_t *)&context->ptrActiveScanSns[0u]);
+                                    ptrIntrCxt->ptrSSCallback((cy_stc_active_scan_sns_t *)&context->ptrActiveScanSns[0u]);
                                 #else
                                     ptrIntrCxt->ptrSSCallback(NULL);
                                 #endif
                             }
 
                             #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                                Cy_MSC_ConfigureScan(ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase,
+                                Cy_MSC_ConfigureScan(ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase,
                                                      CY_MSC_6_SNS_REGS, ptrSensorFrame);
                             #endif
                         }
@@ -525,7 +473,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
                             /* Initiates the frame start for each channel in DMA driven scan mode */
                             for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
                             {
-                                ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->FRAME_CMD =
+                                ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->FRAME_CMD =
                                     MSC_FRAME_CMD_START_FRAME_Msk;
                             }
                         #endif
@@ -535,7 +483,7 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
         }
     }
 
-    return capStatus;
+    return (capStatus);
 }
 
 
@@ -543,12 +491,9 @@ cy_capsense_status_t Cy_CapSense_ScanSlots_V3(
 * Function Name: Cy_CapSense_ScanAllWidgets_V3
 ****************************************************************************//**
 *
-* Initiates the non-blocking scan for all widgets/sensors. 
-*
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
+* Initiates the non-blocking scan for all widgets/sensors. Scanning is
+* initiated only if no scan is in progress. Scan finishing can be
+* checked by the Cy_CapSense_IsBusy() function.
 *
 * The function is the wrapper for the Cy_CapSense_ScanAllSlots() function
 * to provide the backward compatibility.
@@ -575,7 +520,7 @@ cy_capsense_status_t Cy_CapSense_ScanAllWidgets_V3(cy_stc_capsense_context_t * c
         capStatus = Cy_CapSense_ScanSlots(0u, CY_CAPSENSE_SLOT_COUNT, context);
     }
 
-    return capStatus;
+    return (capStatus);
 }
 
 
@@ -583,16 +528,13 @@ cy_capsense_status_t Cy_CapSense_ScanAllWidgets_V3(cy_stc_capsense_context_t * c
 * Function Name: Cy_CapSense_ScanWidget_V3
 ****************************************************************************//**
 *
-* Initiates the scanning of all sensors in the widget. 
+* Initiates the scanning of all sensors in the widget. Scanning is
+* initiated only if no scan is in progress. Scan finishing can be
+* checked by the Cy_CapSense_IsBusy() function.
 *
 * The function uses the Cy_CapSense_ScanSlots() function with the parameters of
 * startSlotId and numberSlots retrieved from the firstSlotId and numSlots
 * fields of the cy_stc_capsense_widget_config_t structure.
-*
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
 *
 * \note
 * This function is available only for the fifth-generation CAPSENSE&trade;.
@@ -627,11 +569,11 @@ cy_capsense_status_t Cy_CapSense_ScanWidget_V3(
                         context->ptrWdConfig[widgetId].numSlots, context);
             }
         #else
-            (void)widgetId;
+            (void) widgetId;
         #endif /* (1u >= CY_CAPSENSE_TOTAL_CH_NUMBER) */
     }
 
-    return capStatus;
+    return (capStatus);
 }
 
 
@@ -639,12 +581,9 @@ cy_capsense_status_t Cy_CapSense_ScanWidget_V3(
 * Function Name: Cy_CapSense_ScanSensor_V3
 ****************************************************************************//**
 *
-* Initiates the scanning of the selected sensor in the widget.
-*
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
+* Initiates the scanning of the selected sensor in the widget. Scanning is
+* initiated only if no scan is in progress. Scan finishing can be
+* checked by the Cy_CapSense_IsBusy() function.
 *
 * \note
 * This function is available only for the fifth-generation CAPSENSE&trade;.
@@ -687,19 +626,19 @@ cy_capsense_status_t Cy_CapSense_ScanSensor_V3(
                 }
             }
         #else
-            (void)widgetId;
-            (void)sensorId;
+            (void) widgetId;
+            (void) sensorId;
         #endif /* (1u >= CY_CAPSENSE_TOTAL_CH_NUMBER) */
     }
 
-    return capStatus;
+    return (capStatus);
 }
 
 
 #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CALIBRATION_EN) || \
      (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CALIBRATION_EN))
 /*******************************************************************************
-* Function Name: Cy_CapSense_CalibrateAllSlots_V3
+* Function Name: Cy_CapSense_CalibrateAllSlots
 ****************************************************************************//**
 *
 * Executes CapDAC auto-calibration for all relevant widgets if enabled.
@@ -716,10 +655,10 @@ cy_capsense_status_t Cy_CapSense_ScanSensor_V3(
 * * 85% of the maximum raw count for CSD widgets
 * * 40% of the maximum raw count for CSX widgets.
 *
-* To change calibration targets use the Cy_CapSense_SetCalibrationTarget() function.
+* To change calibration targets use the Cy_CapSense_SetCalibrTarget() function.
 *
 * \note
-* This function is available only for the fifth-generation low power CAPSENSE&trade;.
+* This function is available only for the fifth-generation CAPSENSE&trade;.
 *
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
@@ -736,13 +675,11 @@ cy_capsense_status_t Cy_CapSense_ScanSensor_V3(
 *                                         defined range.
 *
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_CalibrateAllSlots_V3(cy_stc_capsense_context_t * context)
+cy_capsense_status_t Cy_CapSense_CalibrateAllSlots(cy_stc_capsense_context_t * context)
 {
     cy_capsense_status_t calibStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
     const cy_stc_capsense_common_config_t * ptrCommonCfg;
     uint32_t curWdIndex;
-
-    const cy_stc_capsense_widget_config_t * ptrWdCfg;
 
     #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_REF_AUTO_USAGE) || \
          (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_REF_AUTO_USAGE) || \
@@ -835,23 +772,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateAllSlots_V3(cy_stc_capsense_context_t 
             {
                 for (curWdIndex = 0u; curWdIndex < ptrCommonCfg->numWd; curWdIndex++)
                 {
-                    ptrWdCfg = &context->ptrWdConfig[curWdIndex];
-                    switch (ptrWdCfg->senseMethod)
-                    {
-                        #if (CY_CAPSENSE_CSD_CDAC_CALIBRATION_USAGE)
-                            case CY_CAPSENSE_CSD_GROUP:
-                        #endif
-
-                        #if (CY_CAPSENSE_CSX_CDAC_CALIBRATION_USAGE)
-                            case CY_CAPSENSE_CSX_GROUP:
-                        #endif
-
-                            calibStatus |= Cy_CapSense_VerifyCalibration(curWdIndex, context);
-                            break;
-                        default:
-                            /* Skip widget with disabled auto-calibration */
-                            break;
-                    }
+                    calibStatus |= Cy_CapSense_VerifyCalibration(curWdIndex, context);
                 }
             }
 
@@ -870,7 +791,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateAllSlots_V3(cy_stc_capsense_context_t 
         context->ptrCommonContext->status &= ~(uint32_t)CY_CAPSENSE_MW_STATE_CALIBRATION_MASK;
     }
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -878,31 +799,28 @@ cy_capsense_status_t Cy_CapSense_CalibrateAllSlots_V3(cy_stc_capsense_context_t 
 #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CALIBRATION_EN) || \
      (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CALIBRATION_EN))
 /*******************************************************************************
-* Function Name: Cy_CapSense_SetCalibrationTarget_V3
+* Function Name: Cy_CapSense_SetCalibrationTargets
 ****************************************************************************//**
 *
-* Sets the CapDAC auto-calibration raw count targets for CSD, CSX and/or ISX
-* widgets.
+* Sets the CapDAC auto-calibration raw count targets for CSD and/or CSX widgets.
 *
-* The function sets the specified raw count targets if CSD, CSX and/or ISX widgets
-* are in the project and the auto-calibration is enabled for them. These targets
-* will be used instead the configured ones by Cy_CapSense_CalibrateAllSlots(),
+* The function sets the specified raw count targets if CSD and/or CSX widgets are
+* in the project and the auto-calibration is enabled for them. These targets will
+* be used instead the configured ones by Cy_CapSense_CalibrateAllSlots(),
 * Cy_CapSense_CalibrateAllWidgets() and Cy_CapSense_CalibrateWidget() functions.
 *
 * \note
 * This function is available only for the fifth-generation CAPSENSE&trade;.
 *
-* \param calibrTarget
-* The raw counts target in percentage for the specified sensing method.
-* It should be more than 0u and less than 100u. If the specified target is outside the
-* range, then it will not be updated and the CY_CAPSENSE_STATUS_BAD_PARAM status will be
-* returned.
+* \param csdCalibrTarget
+* The specified raw counts target for CSD widgets in percentage. It should be
+* more than 0u and less than 100u. If the specified target is outside the range,
+* then the configured target value will be used for the auto-calibration.
 *
-* \param snsMethod
-* Desired sensing method the calibration target should be updated for:
-* * CY_CAPSENSE_CSD_GROUP - CSD sensing method
-* * CY_CAPSENSE_CSX_GROUP - CSX sensing method
-* * CY_CAPSENSE_ISX_GROUP - ISX sensing method
+* \param csxCalibrTarget
+* The specified raw counts target for CSX widgets in percentage. It should be
+* more than 0u and less than 100u. If the specified target is outside the range,
+* then the configured target value will be used for the auto-calibration.
 *
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
@@ -912,48 +830,34 @@ cy_capsense_status_t Cy_CapSense_CalibrateAllSlots_V3(cy_stc_capsense_context_t 
 * - CY_CAPSENSE_STATUS_SUCCESS          - The operation is performed successfully.
 * - CY_CAPSENSE_STATUS_BAD_PARAM        - At least one of the input parameter is
 *                                         invalid.
+* - CY_CAPSENSE_STATUS_BAD_CONFIG       - The configuration parameter is invalid.
 *
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_SetCalibrationTarget_V3(
-                uint32_t calibrTarget,
-                uint32_t snsMethod,
+cy_capsense_status_t Cy_CapSense_SetCalibrationTargets(
+                uint32_t csdCalibrTarget,
+                uint32_t csxCalibrTarget,
                 cy_stc_capsense_context_t * context)
 {
     cy_capsense_status_t calibStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
 
     if (NULL != context)
     {
-        if ((CY_CAPSENSE_PERCENTAGE_100 > calibrTarget) && (0u < calibrTarget))
+        if ((CY_CAPSENSE_PERCENTAGE_100 > csdCalibrTarget) &&
+            (CY_CAPSENSE_PERCENTAGE_100 > csxCalibrTarget) &&
+            (0u < csdCalibrTarget) && (0u < csxCalibrTarget))
         {
-            switch (snsMethod)
-            {
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
-                    case CY_CAPSENSE_CSD_GROUP:
-                        context->ptrInternalContext->intrCsdRawTarget = (uint8_t)calibrTarget;
-                        break;
-                #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN) */
+            #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CALIBRATION_EN)
+                context->ptrInternalContext->intrCsdRawTarget = (uint8_t)csdCalibrTarget;
+            #endif
 
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
-                    case CY_CAPSENSE_CSX_GROUP:
-                        context->ptrInternalContext->intrCsxRawTarget = (uint8_t)calibrTarget;
-                        break;
-                #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN) */
-
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_ISX_EN)
-                    case CY_CAPSENSE_ISX_GROUP:
-                        context->ptrInternalContext->intrIsxRawTarget = (uint8_t)calibrTarget;
-                        break;
-                #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_ISX_EN) */
-
-                default:
-                    /* No action */
-                    break;
-            }
+            #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CALIBRATION_EN)
+                context->ptrInternalContext->intrCsxRawTarget = (uint8_t)csxCalibrTarget;
+            #endif
             calibStatus = CY_CAPSENSE_STATUS_SUCCESS;
         }
     }
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -1000,7 +904,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateAllWidgets_V3(
         #endif /* (1u >= CY_CAPSENSE_TOTAL_CH_NUMBER) */
     }
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -1057,7 +961,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateWidget_V3(
         {
             ptrWdCfg = &context->ptrWdConfig[widgetId];
 
-            switch (ptrWdCfg->senseMethod)
+            switch(ptrWdCfg->senseMethod)
             {
                 #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN) && (0u != CY_CAPSENSE_CSD_CALIBRATION_EN))
                     case CY_CAPSENSE_CSD_GROUP:
@@ -1151,7 +1055,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateWidget_V3(
         context->ptrCommonContext->status &= ~(uint32_t)CY_CAPSENSE_MW_STATE_CALIBRATION_MASK;
     }
 
-    return calibrationStatus;
+    return (calibrationStatus);
 }
 #endif
 
@@ -1179,7 +1083,7 @@ uint32_t Cy_CapSense_WatchdogCyclesNum(
 {
     uint32_t retVal;
 
-    if (0uL != cyclesPerLoop)
+    if(0uL != cyclesPerLoop)
     {
         retVal = (desiredTimeUs * cpuFreqMHz) / cyclesPerLoop;
     }
@@ -1188,7 +1092,7 @@ uint32_t Cy_CapSense_WatchdogCyclesNum(
         retVal = 0xFFFFFFFFuL;
     }
 
-    return retVal;
+    return(retVal);
 }
 
 
@@ -1213,9 +1117,9 @@ cy_capsense_status_t Cy_CapSense_SsInitialize(cy_stc_capsense_context_t * contex
     uint32_t curChIndex;
     cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_SUCCESS;
     const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
+    const cy_stc_capsense_widget_config_t * ptrWdCfg;
     uint32_t i;
 
-    (void)ptrCommonCfg;
     capStatus |= Cy_CapSense_InitializeSourceSenseClk(context);
 
     /* Initialize all enabled MSC channels for scan */
@@ -1227,7 +1131,7 @@ cy_capsense_status_t Cy_CapSense_SsInitialize(cy_stc_capsense_context_t * contex
 
         /* Configure inactive sensor states */
         #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
-            if (context->ptrInternalContext->intrCsdInactSnsConn != ptrCommonCfg->csdInactiveSnsConnection)
+            if(context->ptrInternalContext->intrCsdInactSnsConn != ptrCommonCfg->csdInactiveSnsConnection)
             {
                 context->ptrInternalContext->intrCsdInactSnsConn = ptrCommonCfg->csdInactiveSnsConnection;
                 Cy_CapSense_SetCsdInactiveState(context);
@@ -1235,7 +1139,7 @@ cy_capsense_status_t Cy_CapSense_SsInitialize(cy_stc_capsense_context_t * contex
         #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN) */
 
         #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
-            if (context->ptrInternalContext->intrCsxInactSnsConn != ptrCommonCfg->csxInactiveSnsConnection)
+            if(context->ptrInternalContext->intrCsxInactSnsConn != ptrCommonCfg->csxInactiveSnsConnection)
             {
                 context->ptrInternalContext->intrCsxInactSnsConn = ptrCommonCfg->csxInactiveSnsConnection;
                 Cy_CapSense_SetCsxInactiveState(context);
@@ -1256,11 +1160,28 @@ cy_capsense_status_t Cy_CapSense_SsInitialize(cy_stc_capsense_context_t * contex
             &context->ptrSensorFrameContext[(CY_CAPSENSE_SLOT_COUNT *
                                             (curChIndex + context->ptrCommonConfig->channelOffset)) *
                                             CY_MSC_6_SNS_REGS], context);
-        #endif
+        #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) */
     }
 
     /* Assign the ISR for scan */
     context->ptrInternalContext->ptrISRCallback = &Cy_CapSense_ScanISR;
+
+    /* Find maximum raw count for each widget */
+    ptrWdCfg = &context->ptrWdConfig[0u];
+    for (i = 0u; i < context->ptrCommonConfig->numWd; i++)
+    {
+        ptrWdCfg->ptrWdContext->maxRawCount = (uint16_t)Cy_CapSense_GetMaxRaw(ptrWdCfg->ptrWdContext->snsClk, ptrWdCfg, context);
+        #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+            (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
+            if((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) &&
+               (((uint8_t)CY_CAPSENSE_WD_MATRIX_BUTTON_E == ptrWdCfg->wdType) ||
+               ((uint8_t)CY_CAPSENSE_WD_TOUCHPAD_E == ptrWdCfg->wdType)))
+            {
+                ptrWdCfg->ptrWdContext->maxRawCountRow = (uint16_t)Cy_CapSense_GetMaxRaw(ptrWdCfg->ptrWdContext->rowSnsClk, ptrWdCfg, context);
+            }
+        #endif
+        ptrWdCfg++;
+    }
 
     /* Call user's callback function if it is registered */
     if (NULL != context->ptrInternalContext->ptrEODsInitCallback)
@@ -1281,20 +1202,7 @@ cy_capsense_status_t Cy_CapSense_SsInitialize(cy_stc_capsense_context_t * contex
         capStatus |= Cy_CapSense_SwitchHwConfiguration(CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING, context);
     }
 
-    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN)
-        if (CY_CAPSENSE_STATUS_SUCCESS == capStatus)
-        {
-            capStatus = Cy_CapSense_CdacDitherScaleCalc(context);
-        }
-    #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN) */
-
-    /* Find maximum raw count for each widget */
-    for (i = 0u; i < context->ptrCommonConfig->numWd; i++)
-    {
-        capStatus |= Cy_CapSense_InitializeMaxRaw(i, context);
-    }
-
-    return capStatus;
+    return (capStatus);
 }
 
 
@@ -1360,16 +1268,42 @@ void Cy_CapSense_InterruptHandler_V3(const MSC_Type * base, cy_stc_capsense_cont
     context->ptrInternalContext->ptrISRCallback((void *)context);
 }
 
+
 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
 /*******************************************************************************
 * Function Name: Cy_CapSense_SetPinState_V3
 ****************************************************************************//**
 *
-* The internal function to set the state (drive mode and HSIOM state) of the GPIO used
-* by a sensor.
+* Sets the state (drive mode and HSIOM state) of the GPIO used by a sensor.
 *
-* See the Cy_CapSense_SetPinState() description for details.
-
+* The possible states are GND, Shield, High-Z, Tx, Negative Tx, Rx, and Sensor.
+* If the sensor specified in the input parameter is a ganged sensor, then
+* the state of all GPIOs associated with the ganged sensor is updated.
+*
+* To access a sensor of CSD of button or slider widgets, use the sensor ID.
+* To access a sensor of CSD matrix button or touchpad widgets,
+* use either row ID or column ID as appropriate.
+* To access sensor CSX widgets, use either Rx ID or Tx ID as appropriate.
+*
+* This function accepts the CY_CAPSENSE_SHIELD and CY_CAPSENSE_SENSOR states
+* as an input only if there is at least one CSD widget in the project.
+* Similarly, this function accepts the CY_CAPSENSE_TX_PIN and
+* CY_CAPSENSE_RX_PIN states as an input only if there is at least one
+* CSX widget in the project.
+*
+* This function must not be called while the middleware is in the busy state.
+* Calling this function directly from the application program is not
+* recommended. This function is used to implement only the custom-specific
+* use cases.
+*
+* Functions that perform a setup and scan of a sensor/widget
+* set the required pin states automatically for a sensor as required
+* and overwrite changes made by this function to a sensor that are
+* going to be scanned. Therefore the Cy_CapSense_SetPinState() function
+* is called in StartSample callback
+* (see the \ref group_capsense_callbacks section for details)
+* or with low-level functions that perform a single-sensor scanning.
+*
 * \note
 * This function is available only for the fifth-generation CAPSENSE&trade; when
 * Sensor Connection Method = AMUX mode.
@@ -1527,7 +1461,7 @@ cy_capsense_status_t Cy_CapSense_SetPinState_V3(
             }
         }
     }
-    return connState;
+    return (connState);
 }
 
 
@@ -1539,7 +1473,7 @@ cy_capsense_status_t Cy_CapSense_SetPinState_V3(
 *
 * The function checks the widget type and performs connection of all sensor
 * electrodes (sns for CSD widgets and Tx/Rx for CSX ones) including ganged.
-* The sensor and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The sensor and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The channel index.
@@ -1585,7 +1519,7 @@ void Cy_CapSense_ConnectSensor(
 *
 * The function checks the widget type and performs disconnection of all sensor
 * electrodes (sns for CSD widgets and Tx/Rx for CSX ones) including ganged.
-* The sensor and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The sensor and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1631,7 +1565,7 @@ void Cy_CapSense_DisconnectSensor(
 * Connects a CSD sensor to the specified channel MSC HW block.
 *
 * The function connects all the sensor pins including ganged.
-* The sensor and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The sensor and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1649,10 +1583,10 @@ void Cy_CapSense_CsdConnectSns(
     const cy_stc_capsense_pin_config_t * ptrActivePin = eltdPinCfg->ptrPin;
     uint32_t i;
 
-    if ((chIndex + context->ptrCommonConfig->channelOffset) == eltdPinCfg->chId)
+    if((chIndex + context->ptrCommonConfig->channelOffset) == eltdPinCfg->chId)
     {
         /* Connect all pins of current sensors */
-        for (i = 0u; i < eltdPinCfg->numPins; i++)
+        for(i = 0u; i < eltdPinCfg->numPins; i++)
         {
             Cy_CapSense_SsConfigPinRegisters(ptrActivePin->pcPtr, (uint32_t)ptrActivePin->pinNumber,
                     CY_CAPSENSE_DM_GPIO_ANALOG, CY_CAPSENSE_HSIOM_SEL_CSD_SENSE);
@@ -1669,7 +1603,7 @@ void Cy_CapSense_CsdConnectSns(
 * Disconnects a CSD sensor from the specified channel MSC HW block.
 *
 * The function disconnects all the sensor pins including ganged.
-* The sensor and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The sensor and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1691,7 +1625,7 @@ void Cy_CapSense_CsdDisconnectSns(
     if ((chIndex + context->ptrCommonConfig->channelOffset) == eltdPinCfg->chId)
     {
         /* Disconnect all pins of the current sensor */
-        for (i = 0u; i < eltdPinCfg->numPins; i++)
+        for(i = 0u; i < eltdPinCfg->numPins; i++)
         {
             Cy_CapSense_SsConfigPinRegisters(ptrActivePin->pcPtr, (uint32_t)ptrActivePin->pinNumber,
                                              context->ptrInternalContext->csdInactiveSnsDm,
@@ -1712,7 +1646,7 @@ void Cy_CapSense_CsdDisconnectSns(
 * Connects a CSX sensor Tx electrode to the specified channel MSC HW block.
 *
 * The function connects all the Tx electrode pins including ganged.
-* The electrode and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The electrode and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1728,18 +1662,18 @@ void Cy_CapSense_CsxConnectTx(
     uint32_t pinIndex;
     en_hsiom_sel_t hsiomState = CY_CAPSENSE_HSIOM_SEL_CSD_SENSE;
     const cy_stc_capsense_electrode_config_t * ptrEltd;
-    const cy_stc_capsense_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
+    const cy_stc_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
     const cy_stc_capsense_pin_config_t * pinPointer;
 
-    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_TX_ENABLED)
+    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_ENABLED)
         uint32_t i;
         uint32_t pattern;
         uint32_t eltdMptxOrder;
         cy_stc_capsense_widget_config_t const * ptrWdCfg = &context->ptrWdConfig[ptrActive->widgetIndex];
-        uint32_t mptxOrd = ptrWdCfg->mpOrder;
+        uint32_t mptxOrd = ptrWdCfg->mptxOrder;
     #endif
 
-    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_TX_ENABLED)
+    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_ENABLED)
         if (CY_CAPSENSE_MPTX_MIN_ORDER > mptxOrd)
         {
             ptrEltd = ptrActive->ptrTxConfig;
@@ -1763,7 +1697,7 @@ void Cy_CapSense_CsxConnectTx(
             ptrEltd = &ptrWdCfg->ptrEltdConfig[i];
 
             /* Finding the right vector / pattern for mptx operation */
-            pattern = ptrWdCfg->ptrMpTable->vector;
+            pattern = ptrWdCfg->ptrMptxTable->vector;
             if (0u != eltdMptxOrder)
             {
                 pattern = (pattern >> eltdMptxOrder) | (pattern << (mptxOrd - eltdMptxOrder));
@@ -1820,7 +1754,7 @@ void Cy_CapSense_CsxConnectTx(
 * Connects a CSX sensor Rx electrode to the specified channel MSC HW block.
 *
 * The function connects all the Rx electrode pins including ganged.
-* The electrode and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The electrode and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1857,7 +1791,7 @@ void Cy_CapSense_CsxConnectRx(
 * Disconnects a CSX sensor Tx electrode from the specified channel MSC HW block.
 *
 * The function disconnects all the Tx electrode pins including ganged.
-* The electrode and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The electrode and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -1872,17 +1806,17 @@ void Cy_CapSense_CsxDisconnectTx(
 {
     uint32_t pinIndex;
     const cy_stc_capsense_electrode_config_t * ptrEltd;
-    const cy_stc_capsense_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
+    const cy_stc_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
     const cy_stc_capsense_pin_config_t * pinPointer = ptrActive->ptrTxConfig->ptrPin;
 
-    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_TX_ENABLED)
+    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_ENABLED)
         uint32_t i;
         uint32_t eltdMptxOrder;
         cy_stc_capsense_widget_config_t const * ptrWdCfg = &context->ptrWdConfig[ptrActive->widgetIndex];
-        uint32_t mptxOrd = ptrWdCfg->mpOrder;
+        uint32_t mptxOrd = ptrWdCfg->mptxOrder;
     #endif
 
-    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_TX_ENABLED)
+    #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_ENABLED)
         if (CY_CAPSENSE_MPTX_MIN_ORDER > mptxOrd)
         {
             ptrEltd = ptrActive->ptrTxConfig;
@@ -1949,7 +1883,7 @@ void Cy_CapSense_CsxDisconnectTx(
 * Disconnects a CSX sensor Rx electrode from the specified channel MSC HW block.
 *
 * The function disconnects all the Rx electrode pins including ganged.
-* The electrode and the current slot are specified in the cy_stc_capsense_active_scan_sns_t structure.
+* The electrode and the current slot are specified in the cy_stc_active_scan_sns_t structure.
 *
 * \param chIndex
 * The desired channel index.
@@ -2016,7 +1950,7 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
 
     #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
         uint32_t scanSlotIndexValid;
-        cy_stc_capsense_active_scan_sns_t * ptrActive;
+        cy_stc_active_scan_sns_t * ptrActive;
         cy_stc_capsense_internal_context_t * ptrIntrCxt = cxt->ptrInternalContext;
         uint32_t slotStcIndex;
     #endif /* (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
@@ -2032,14 +1966,14 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
     /* Check which channel have fired the interrupt */
     for (i = 0u; i < CY_CAPSENSE_TOTAL_CH_NUMBER; i++)
     {
-        if (0u != (ptrCommonCfg->ptrChConfig[i].ptrHwBase->INTR & intrMask))
+        if (0u != (ptrCommonCfg->ptrMscChConfig[i].ptrMscBase->INTR & intrMask))
         {
             curChIndex = i;
             break;
         }
     }
 
-    ptrMscHwBase = ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase;
+    ptrMscHwBase = ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase;
 
     if (curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER)
     {
@@ -2053,8 +1987,7 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
             ptrActive = &(cxt->ptrActiveScanSns[curChIndex]);
 
             slotValue = cxt->ptrScanSlots[slotStcIndex].wdId;
-            /* Skips raw count update for empty slots or disabled/non-working widgets */
-            if ((CY_CAPSENSE_SLOT_SHIELD_ONLY > slotValue) && (0u != Cy_CapSense_IsWidgetEnabled(slotValue, cxt)))
+            if(CY_CAPSENSE_SLOT_SHIELD_ONLY > slotValue)
             {
                 /* Read raw counts */
                 tmpRawCount = ptrMscHwBase->RESULT_FIFO_RD;
@@ -2084,32 +2017,19 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
                 }
             #endif
 
-            /* Find the next enabled slot for scanning */
-            ptrActive->currentChannelSlotIndex = ptrIntrCxt->currentSlotIndex;
-            while (ptrActive->currentChannelSlotIndex != ptrIntrCxt->endSlotIndex)
-            {
-                if (0u != Cy_CapSense_IsSlotEnabled((uint32_t)ptrActive->currentChannelSlotIndex + 1u, cxt))
-                {
-                    break;
-                }
-                /* Update active sensor structure */
-                ptrActive->currentChannelSlotIndex++;
-                slotStcIndex++;
-            }
-
             /* Check for the last slot with multiple slot scan, if not - start the next slot scan */
-            if (ptrActive->currentChannelSlotIndex != ptrIntrCxt->endSlotIndex)
+            if (ptrIntrCxt->currentSlotIndex != ptrIntrCxt->endSlotIndex)
             {
                 /* Update active sensor structure */
-                ptrActive->currentChannelSlotIndex++;
+                ptrActive->currentChannelSlotIndex = ptrIntrCxt->currentSlotIndex + 1u;
                 slotStcIndex++;
                 slotValue = cxt->ptrScanSlots[slotStcIndex].wdId;
 
                 scanSlotIndexValid = slotStcIndex;
-                if (CY_CAPSENSE_SLOT_EMPTY == slotValue)
+                if(CY_CAPSENSE_SLOT_EMPTY == slotValue)
                 {
                     #if (CY_CAPSENSE_TOTAL_CH_NUMBER > 1u)
-                        if (slotStcIndex < CY_CAPSENSE_SLOT_COUNT)
+                        if(slotStcIndex < CY_CAPSENSE_SLOT_COUNT)
                         {
                             scanSlotIndexValid += CY_CAPSENSE_SLOT_COUNT;
                         }
@@ -2138,7 +2058,7 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
                 Cy_CapSense_InitActivePtr(curChIndex, wdIndex,
                             cxt->ptrScanSlots[scanSlotIndexValid].snsId, cxt);
                 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-                    if ((slotValue != CY_CAPSENSE_SLOT_EMPTY) &&
+                    if((slotValue != CY_CAPSENSE_SLOT_EMPTY) &&
                        (slotValue != CY_CAPSENSE_SLOT_SHIELD_ONLY))
                     {
                         /* Connect the widget first sensor electrodes */
@@ -2161,13 +2081,13 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
                         {
                             break;
                         }
-                        ptrIntrCxt->currentSlotIndex = cxt->ptrActiveScanSns[0u].currentChannelSlotIndex;
+                        ptrIntrCxt->currentSlotIndex++;
                     }
                 #endif /* (1u == CY_CAPSENSE_TOTAL_CH_NUMBER) */
 
                 if (NULL != ptrIntrCxt->ptrSSCallback)
                 {
-                    ptrIntrCxt->ptrSSCallback((cy_stc_capsense_active_scan_sns_t *)&cxt->ptrActiveScanSns[curChIndex]);
+                    ptrIntrCxt->ptrSSCallback((cy_stc_active_scan_sns_t *)&cxt->ptrActiveScanSns[curChIndex]);
                 }
 
                 /* Start the next scan for the current channel */
@@ -2190,7 +2110,7 @@ void Cy_CapSense_ScanISR(void * capsenseContext)
 
 
 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-#if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE) ||\
+#if((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE) ||\
     (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE))
 /*******************************************************************************
 * Function Name: Cy_CapSense_AmuxUpdateCdacComp
@@ -2245,19 +2165,19 @@ void Cy_CapSense_AmuxUpdateScanConfig(
                 cy_stc_capsense_context_t * context)
 {
     uint32_t isSnsRow = 0u;
-    MSC_Type * ptrMscHwBase = context->ptrCommonConfig->ptrChConfig[chIndex].ptrHwBase;
-    cy_stc_capsense_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
+    MSC_Type * ptrMscHwBase = context->ptrCommonConfig->ptrMscChConfig[chIndex].ptrMscBase;
+    cy_stc_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
     uint32_t sensorFrame[CY_MSC_6_SNS_REGS] = {0u, 0u, 0u, 0u, 0u, 0u};
 
-    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
-        if ((CY_CAPSENSE_CSD_GROUP == ptrActive->currentSenseMethod) &&
+    #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
+        if((CY_CAPSENSE_CSD_GROUP == ptrActive->currentSenseMethod) &&
            (context->ptrWdConfig[ptrActive->widgetIndex].numCols <= ptrActive->sensorIndex))
         {
             isSnsRow = 1u;
         }
     #endif
 
-    if ((prevWdIndex != ptrActive->widgetIndex) || (0u != isSnsRow))
+    if((prevWdIndex != ptrActive->widgetIndex) || (0u != isSnsRow))
     {
         (void)Cy_CapSense_GenerateSensorConfig(chIndex, scanSlot, &sensorFrame[0u], context);
 
@@ -2275,13 +2195,13 @@ void Cy_CapSense_AmuxUpdateScanConfig(
     {
         if (CY_CAPSENSE_CSD_GROUP == ptrActive->currentSenseMethod)
         {
-            #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE)
+            #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE)
                 Cy_CapSense_AmuxUpdateCdacComp(ptrMscHwBase, ptrActive->ptrSnsContext);
             #endif
         }
         else
         {
-            #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE)
+            #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE)
                 Cy_CapSense_AmuxUpdateCdacComp(ptrMscHwBase, ptrActive->ptrSnsContext);
             #endif
         }
@@ -2336,12 +2256,12 @@ void Cy_CapSense_SetCmodInDefaultState(
                 const cy_stc_capsense_context_t * context)
 {
     Cy_CapSense_SsConfigPinRegisters(
-            context->ptrCommonConfig->ptrChConfig[chIndex].portCmod1,
-            (uint32_t)context->ptrCommonConfig->ptrChConfig[chIndex].pinCmod1,
+            context->ptrCommonConfig->ptrMscChConfig[chIndex].portCmod1,
+            (uint32_t)context->ptrCommonConfig->ptrMscChConfig[chIndex].pinCmod1,
             CY_CAPSENSE_DM_GPIO_ANALOG, CY_CAPSENSE_HSIOM_SEL_GPIO);
     Cy_CapSense_SsConfigPinRegisters(
-            context->ptrCommonConfig->ptrChConfig[chIndex].portCmod2,
-            (uint32_t)context->ptrCommonConfig->ptrChConfig[chIndex].pinCmod2,
+            context->ptrCommonConfig->ptrMscChConfig[chIndex].portCmod2,
+            (uint32_t)context->ptrCommonConfig->ptrMscChConfig[chIndex].pinCmod2,
             CY_CAPSENSE_DM_GPIO_ANALOG, CY_CAPSENSE_HSIOM_SEL_GPIO);
 }
 
@@ -2371,13 +2291,13 @@ void Cy_CapSense_SetCmodInAmuxModeState(
                 const cy_stc_capsense_context_t * context)
 {
     Cy_CapSense_SsConfigPinRegisters(
-            context->ptrCommonConfig->ptrChConfig[chIndex].portCmod1,
-            (uint32_t)context->ptrCommonConfig->ptrChConfig[chIndex].pinCmod1,
+            context->ptrCommonConfig->ptrMscChConfig[chIndex].portCmod1,
+            (uint32_t)context->ptrCommonConfig->ptrMscChConfig[chIndex].pinCmod1,
             CY_CAPSENSE_DM_GPIO_ANALOG, CY_CAPSENSE_HSIOM_SEL_AMUXA);
 
     Cy_CapSense_SsConfigPinRegisters(
-            context->ptrCommonConfig->ptrChConfig[chIndex].portCmod2,
-            (uint32_t)context->ptrCommonConfig->ptrChConfig[chIndex].pinCmod2,
+            context->ptrCommonConfig->ptrMscChConfig[chIndex].portCmod2,
+            (uint32_t)context->ptrCommonConfig->ptrMscChConfig[chIndex].pinCmod2,
             CY_CAPSENSE_DM_GPIO_ANALOG, CY_CAPSENSE_HSIOM_SEL_AMUXA);
 }
 #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD) */
@@ -2545,7 +2465,7 @@ void Cy_CapSense_InitActivePtr(
 {
     Cy_CapSense_InitActivePtrWd(chIndex, widgetId, context);
 
-    if (CY_CAPSENSE_SLOT_SHIELD_ONLY > widgetId)
+    if(CY_CAPSENSE_SLOT_SHIELD_ONLY > widgetId)
     {
         Cy_CapSense_InitActivePtrSns(chIndex, sensorId, context);
     }
@@ -2581,7 +2501,7 @@ void  Cy_CapSense_InitActivePtrSns(
 {
     #if ((CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) || \
          (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_MEASUREMENT_GROUP_EN))
-        cy_stc_capsense_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
+        cy_stc_active_scan_sns_t * ptrActive = &context->ptrActiveScanSns[chIndex];
     #endif
 
     #if ((CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD) || \
@@ -2596,7 +2516,7 @@ void  Cy_CapSense_InitActivePtrSns(
     #endif
 
     #if ((CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD) && \
-         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_TX_ENABLED))
+         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_PHASE_ENABLED))
         ptrActive->sensorIndex = (uint16_t)sensorId;
     #endif
 
@@ -2615,7 +2535,7 @@ void  Cy_CapSense_InitActivePtrSns(
 
     #if ((CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD) || \
          (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_MEASUREMENT_GROUP_EN))
-        switch (widgetSenseGroup)
+        switch(widgetSenseGroup)
         {
             #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
                 case (uint8_t)CY_CAPSENSE_CSD_GROUP:
@@ -2632,9 +2552,9 @@ void  Cy_CapSense_InitActivePtrSns(
                     break;
             #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN) */
 
-                default:
-                    /* Widget type is not valid so nothing to do */
-                    break;
+            default:
+                /* Widget type is not valid so nothing to do */
+                break;
         }
     #endif
 }
@@ -2665,14 +2585,14 @@ void Cy_CapSense_InitActivePtrWd(
                 uint32_t widgetId,
                 cy_stc_capsense_context_t * context)
 {
-    cy_stc_capsense_active_scan_sns_t * ptrActive = &(context->ptrActiveScanSns[chIndex]);
+    cy_stc_active_scan_sns_t * ptrActive = &(context->ptrActiveScanSns[chIndex]);
 
     #if ((CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE) || \
          (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_MEASUREMENT_GROUP_EN))
         ptrActive->widgetIndex = (uint8_t)widgetId;
     #endif
 
-    if (CY_CAPSENSE_SLOT_SHIELD_ONLY > widgetId)
+    if(CY_CAPSENSE_SLOT_SHIELD_ONLY > widgetId)
     {
         ptrActive->currentSenseMethod = context->ptrWdConfig[widgetId].senseMethod;
     }
@@ -2755,7 +2675,7 @@ void Cy_CapSense_EnableShieldElectrodes(uint32_t chIndex, cy_stc_capsense_contex
         *ptrSwSelCfg |= CY_CAPSENSE_FW_SHIELD_PASSIVE_AMUX_REG_SW_CSD_SHIELD_VALUE;
     }
 
-    context->ptrCommonConfig->ptrChConfig[chIndex].ptrHwBase->SW_SEL_GPIO = *ptrSwSelCfg;
+    context->ptrCommonConfig->ptrMscChConfig[chIndex].ptrMscBase->SW_SEL_GPIO = *ptrSwSelCfg;
 
     for (shieldIndex = 0u; shieldIndex < context->ptrCommonConfig->csdShieldNumPin; shieldIndex++)
     {
@@ -2803,7 +2723,7 @@ void Cy_CapSense_DisableShieldElectrodes(uint32_t chIndex, cy_stc_capsense_conte
     /* Reverts the .swSelGpio register state to default AMUX+CSX+MPTX */
     context->ptrBaseFrameContext[chIndex].swSelGpio |= CY_CAPSENSE_FW_NEGATIVE_TX_AMUX_REG_SW_CSD_SHIELD_VALUE;
 
-    context->ptrCommonConfig->ptrChConfig[chIndex].ptrHwBase->SW_SEL_GPIO =
+    context->ptrCommonConfig->ptrMscChConfig[chIndex].ptrMscBase->SW_SEL_GPIO =
                     context->ptrBaseFrameContext[chIndex].swSelGpio;
 
     for (shieldIndex = 0u; shieldIndex < context->ptrCommonConfig->csdShieldNumPin; shieldIndex++)
@@ -2823,7 +2743,7 @@ void Cy_CapSense_DisableShieldElectrodes(uint32_t chIndex, cy_stc_capsense_conte
 
 
 /*******************************************************************************
-* Function Name: Cy_CapSense_ScanAbort_V3
+* Function Name: Cy_CapSense_ScanAbort
 ****************************************************************************//**
 *
 * This function sets the sequencer to the idle state by resetting the hardware,
@@ -2843,31 +2763,31 @@ void Cy_CapSense_DisableShieldElectrodes(uint32_t chIndex, cy_stc_capsense_conte
 * Returns the status of the operation \ref cy_capsense_status_t.
 *
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_ScanAbort_V3(cy_stc_capsense_context_t * context)
+cy_capsense_status_t Cy_CapSense_ScanAbort(cy_stc_capsense_context_t * context)
 {
     uint32_t interruptState;
     uint32_t curChIndex;
     const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
-    const cy_stc_capsense_channel_config_t * ptrMscChan = ptrCommonCfg->ptrChConfig;
+    const cy_stc_msc_channel_config_t * ptrMscChan = ptrCommonCfg->ptrMscChConfig;
 
     interruptState = Cy_SysLib_EnterCriticalSection();
 
     /* Clear ENABLE bit for all channels */
     for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
     {
-        ptrMscChan[curChIndex].ptrHwBase->CTL &= ~MSC_CTL_ENABLED_Msk;
+        ptrMscChan[curChIndex].ptrMscBase->CTL &= ~MSC_CTL_ENABLED_Msk;
     }
 
     for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
     {
         /* Wait until ENABLE bit is cleared for all channels*/
-        while (0u != (MSC_CTL_ENABLED_Msk & ptrMscChan[curChIndex].ptrHwBase->CTL))
+        while (0u != (MSC_CTL_ENABLED_Msk & ptrMscChan[curChIndex].ptrMscBase->CTL))
         {}
         /* Set ENABLE bit for all channels */
-        ptrMscChan[curChIndex].ptrHwBase->CTL |= MSC_CTL_ENABLED_Msk;
+        ptrMscChan[curChIndex].ptrMscBase->CTL |= MSC_CTL_ENABLED_Msk;
         /* Clear all pending interrupts of the MSC HW block */
-        ptrMscChan[curChIndex].ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-        (void)ptrMscChan[curChIndex].ptrHwBase->INTR;
+        ptrMscChan[curChIndex].ptrMscBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
+        (void)ptrMscChan[curChIndex].ptrMscBase->INTR;
     }
 
     Cy_SysLib_ExitCriticalSection(interruptState);
@@ -2879,24 +2799,19 @@ cy_capsense_status_t Cy_CapSense_ScanAbort_V3(cy_stc_capsense_context_t * contex
     /* Wait for initialization */
     Cy_SysLib_DelayUs(ptrCommonCfg->analogWakeupDelay);
 
-    return CY_CAPSENSE_STATUS_SUCCESS;
+    return(CY_CAPSENSE_STATUS_SUCCESS);
 }
 
 
 /*******************************************************************************
-* Function Name: Cy_CapSense_MwState_V3
+* Function Name: Cy_CapSense_MwState
 ****************************************************************************//**
 *
 * This function returns a detailed state of the CAPSENSE&trade; middleware and MSC
 * hardware in Single- or Multi-channel mode. This feature is useful in
 * multi-thread applications or in ISR.
-*
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
-* If the middleware is busy, a new scan, setup widgets, any kind of reconfiguration, 
-* or parameter change should not be initiated.
+* Use the Cy_CapSense_IsBusy() function to verify if HW is busy at a particular
+* moment.
 *
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
@@ -2928,10 +2843,41 @@ cy_capsense_status_t Cy_CapSense_ScanAbort_V3(cy_stc_capsense_context_t * contex
 *                                                  scanned slot.
 *
 *******************************************************************************/
-cy_capsense_mw_state_t Cy_CapSense_MwState_V3(const cy_stc_capsense_context_t * context)
+cy_capsense_mw_state_t Cy_CapSense_MwState(const cy_stc_capsense_context_t * context)
 {
     return ((context->ptrCommonContext->status & ~CY_CAPSENSE_MW_STATE_SCAN_SLOT_MASK) |
             ((uint32_t)context->ptrInternalContext->currentSlotIndex << CY_CAPSENSE_MW_STATE_SCAN_SLOT_POS));
+}
+
+
+/*******************************************************************************
+* Function Name: Cy_CapSense_IsBusy_V3
+****************************************************************************//**
+*
+* This function returns a status of the CAPSENSE&trade; middleware whether a scan is
+* currently in progress or not.
+*
+* If the middleware is busy, a new scan or setup widgets should not be initiated.
+*
+* Use the Cy_CapSense_MwState() function to check a detailed CAPSENSE&trade; middleware
+* state.
+*
+* \note
+* This function is available only for the fifth-generation CAPSENSE&trade;.
+*
+* \param context
+* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
+*
+* \return
+* Returns the status of the middleware:
+* - CY_CAPSENSE_NOT_BUSY    - No scan is in progress and a next scan
+*                             can be initiated.
+* - CY_CAPSENSE_BUSY        - The previously initiated scan is in progress.
+*
+*******************************************************************************/
+uint32_t Cy_CapSense_IsBusy_V3(const cy_stc_capsense_context_t * context)
+{
+    return (context->ptrCommonContext->status & CY_CAPSENSE_BUSY);
 }
 
 
@@ -2941,11 +2887,6 @@ cy_capsense_mw_state_t Cy_CapSense_MwState_V3(const cy_stc_capsense_context_t * 
 *
 * Sets BUSY flags of the cy_capsense_context.status register specified
 * by the flags parameter.
-*
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
 *
 * This is an internal function. Do not call this function directly from
 * the application program.
@@ -2973,11 +2914,6 @@ void Cy_CapSense_SetBusyFlags(
 * Clears BUSY flags of the cy_capsense_context.status register specified
 * by the flags parameter.
 *
-* If the middleware is busy, do not initiate a new scan or set up widgets.
-* Use the Cy_CapSense_IsBusy() function to check HW busyness at a particular moment.
-* Use the Cy_CapSense_MwState() function to verify if MW executes any firmware 
-* tasks related to initialization, scanning, and processing at a particular moment.
-*
 * This is an internal function. Do not call this function directly from
 * the application program.
 *
@@ -2995,12 +2931,12 @@ void Cy_CapSense_ClrBusyFlags(
     #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
         /* Clear Last flag inside sensor frame structure for the current channel */
         uint32_t snsPos = context->ptrInternalContext->endSlotIndex + (context->ptrCommonConfig->numSlots * chIndex);
-        context->ptrSensorFrameContext[(snsPos * CY_MSC_6_SNS_REGS) + CY_CAPSENSE_SNS_CTL_INDEX] &= ~MSC_SNS_CTL_LAST_Msk;
+        context->ptrSensorFrameContext[snsPos * CY_MSC_6_SNS_REGS + CY_CAPSENSE_SNS_CTL_INDEX] &= ~MSC_SNS_CTL_LAST_Msk;
     #endif
 
     /* Clear busy flag for the current channel */
     context->ptrCommonContext->status &= (uint32_t)(~(((uint32_t)CY_CAPSENSE_BUSY_CH_MASK) << chIndex));
-    if (0u == (context->ptrCommonContext->status & CY_CAPSENSE_BUSY_ALL_CH_MASK))
+    if(0u == (context->ptrCommonContext->status & CY_CAPSENSE_BUSY_ALL_CH_MASK))
     {
         context->ptrCommonContext->status &= ~CY_CAPSENSE_BUSY;
     }
@@ -3013,7 +2949,7 @@ void Cy_CapSense_ClrBusyFlags(
         if (NULL != context->ptrInternalContext->ptrEOSCallback)
         {
             #if (CY_CAPSENSE_SCAN_MODE_INT_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-                context->ptrInternalContext->ptrEOSCallback((cy_stc_capsense_active_scan_sns_t *)&context->ptrActiveScanSns[0u]);
+                context->ptrInternalContext->ptrEOSCallback((cy_stc_active_scan_sns_t *)&context->ptrActiveScanSns[0u]);
             #else
                 context->ptrInternalContext->ptrEOSCallback(NULL);
             #endif
@@ -3047,12 +2983,12 @@ void Cy_CapSense_ConfigureAnalogMuxResource(
     uint32_t * ptrSwSelCfg;
     uint32_t prevSnsMethod = (uint32_t)context->ptrActiveScanSns[chIndex].currentSenseMethod;
 
-    if (snsMethod != prevSnsMethod)
+    if(snsMethod != prevSnsMethod)
     {
         ptrSwSelCfg = &context->ptrBaseFrameContext[chIndex].swSelGpio;
 
         *ptrSwSelCfg &= ~CY_CAPSENSE_CMOD_AMUX_MSK;
-        context->ptrCommonConfig->ptrChConfig[chIndex].ptrHwBase->SW_SEL_GPIO = *ptrSwSelCfg;
+        context->ptrCommonConfig->ptrMscChConfig[chIndex].ptrMscBase->SW_SEL_GPIO = *ptrSwSelCfg;
 
         /* Enable the specified mode */
         if (CY_CAPSENSE_CSD_GROUP == snsMethod)
@@ -3074,7 +3010,7 @@ void Cy_CapSense_ConfigureAnalogMuxResource(
             #endif
         }
 
-        context->ptrCommonConfig->ptrChConfig[chIndex].ptrHwBase->SW_SEL_GPIO = *ptrSwSelCfg;
+        context->ptrCommonConfig->ptrMscChConfig[chIndex].ptrMscBase->SW_SEL_GPIO = *ptrSwSelCfg;
     }
 }
 #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD) */
@@ -3097,7 +3033,7 @@ void Cy_CapSense_ConfigureAnalogMuxResource(
 cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
                 cy_stc_capsense_context_t * context)
 {
-    const cy_stc_capsense_channel_config_t * ptrCurMscChCfg = context->ptrCommonConfig->ptrChConfig;
+    const cy_stc_msc_channel_config_t * ptrCurMscChCfg = context->ptrCommonConfig->ptrMscChConfig;
     uint32_t curChIndex;
     uint8_t wrIdx;
     uint8_t rdIdx;
@@ -3112,8 +3048,8 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
         dmacBase = context->ptrCommonConfig->ptrDmacBase;
         for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
         {
-            ptrCurMscChCfg = &(context->ptrCommonConfig->ptrChConfig[curChIndex]);
-            mscBase = ptrCurMscChCfg->ptrHwBase;
+            ptrCurMscChCfg = &(context->ptrCommonConfig->ptrMscChConfig[curChIndex]);
+            mscBase = ptrCurMscChCfg->ptrMscBase;
             wrIdx = ptrCurMscChCfg->dmaWrChIndex;
             wrChIdx = ptrCurMscChCfg->dmaChainWrChIndex;
             rdIdx = ptrCurMscChCfg->dmaRdChIndex;
@@ -3134,7 +3070,7 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
             Cy_DMAC_Channel_SetPriority(dmacBase, wrIdx, 3u);
             Cy_DMAC_Descriptor_SetPreemptable(dmacBase, wrIdx, CY_DMAC_DESCRIPTOR_PING, false);
             Cy_DMAC_Channel_SetCurrentDescriptor(dmacBase, wrIdx, CY_DMAC_DESCRIPTOR_PING);
-            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, wrIdx, CY_DMAC_DESCRIPTOR_PING, (void volatile *)&mscBase->SNS_SW_SEL_CSW_MASK2);
+            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, wrIdx, CY_DMAC_DESCRIPTOR_PING, (const uint32_t*)&mscBase->SNS_SW_SEL_CSW_MASK2);
             Cy_DMAC_Descriptor_SetDataCount(dmacBase, wrIdx, CY_DMAC_DESCRIPTOR_PING,  CY_MSC_6_SNS_REGS);
             Cy_DMAC_Channel_Enable(dmacBase, wrIdx);
 
@@ -3153,7 +3089,7 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
             Cy_DMAC_Channel_SetPriority(dmacBase, wrChIdx, 3u);
             Cy_DMAC_Descriptor_SetPreemptable(dmacBase, wrChIdx, CY_DMAC_DESCRIPTOR_PING, false);
             Cy_DMAC_Channel_SetCurrentDescriptor(dmacBase, wrChIdx, CY_DMAC_DESCRIPTOR_PING);
-            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, wrChIdx, CY_DMAC_DESCRIPTOR_PING, (void volatile *)&dmacBase->DESCR[wrIdx].PING_SRC);
+            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, wrChIdx, CY_DMAC_DESCRIPTOR_PING, (void *) &(DMAC_DESCR_PING_SRC(dmacBase, wrIdx)));
             Cy_DMAC_Channel_Enable(dmacBase, wrChIdx);
 
             /* Perform the initial configuration of the RD channel of DMAC */
@@ -3171,7 +3107,7 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
             Cy_DMAC_Channel_SetPriority(dmacBase, rdIdx, 3u);
             Cy_DMAC_Descriptor_SetPreemptable(dmacBase, rdIdx, CY_DMAC_DESCRIPTOR_PING, false);
             Cy_DMAC_Channel_SetCurrentDescriptor(dmacBase, rdIdx, CY_DMAC_DESCRIPTOR_PING);
-            Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, rdIdx, CY_DMAC_DESCRIPTOR_PING, (void volatile const *)&(mscBase->RESULT_FIFO_RD));
+            Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, rdIdx, CY_DMAC_DESCRIPTOR_PING, (uint32_t *)&(mscBase->RESULT_FIFO_RD));
             Cy_DMAC_Descriptor_SetDataCount(dmacBase, rdIdx, CY_DMAC_DESCRIPTOR_PING, 1u);
             Cy_DMAC_Channel_Enable(dmacBase, rdIdx);
 
@@ -3190,7 +3126,7 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
             Cy_DMAC_Channel_SetPriority(dmacBase, rdChIdx, 3u);
             Cy_DMAC_Descriptor_SetPreemptable(dmacBase, rdChIdx, CY_DMAC_DESCRIPTOR_PING, false);
             Cy_DMAC_Channel_SetCurrentDescriptor(dmacBase, rdChIdx, CY_DMAC_DESCRIPTOR_PING);
-            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, rdChIdx, CY_DMAC_DESCRIPTOR_PING, (void volatile *) &dmacBase->DESCR[rdIdx].PING_DST);
+            Cy_DMAC_Descriptor_SetDstAddress(dmacBase, rdChIdx, CY_DMAC_DESCRIPTOR_PING, (void *) &(DMAC_DESCR_PING_DST(dmacBase, rdIdx)));
             Cy_DMAC_Enable(dmacBase);
         }
 
@@ -3198,7 +3134,7 @@ cy_capsense_status_t Cy_CapSense_InitializeDmaResource(
 
     }
 
-    return capStatus;
+    return (capStatus);
 }
 #endif /* (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
 
@@ -3224,7 +3160,7 @@ cy_capsense_status_t Cy_CapSense_ConfigureDmaResource(
                 cy_stc_capsense_context_t * context)
 {
     cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_SUCCESS;
-    const cy_stc_capsense_channel_config_t * ptrCurMscChCfg = &(context->ptrCommonConfig->ptrChConfig[mscChIndex]);
+    const cy_stc_msc_channel_config_t * ptrCurMscChCfg = &(context->ptrCommonConfig->ptrMscChConfig[mscChIndex]);
     DMAC_Type * dmacBase = context->ptrCommonConfig->ptrDmacBase;
     uint8_t chainWrChIndex = ptrCurMscChCfg->dmaChainWrChIndex;
     uint8_t chainRdChIndex = ptrCurMscChCfg->dmaChainRdChIndex;
@@ -3236,122 +3172,17 @@ cy_capsense_status_t Cy_CapSense_ConfigureDmaResource(
     Cy_DMAC_Channel_Disable(dmacBase, chainRdChIndex);
 
     /* Configure the destination and data count for the Chain Write channel of DMAC */
-    Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, chainWrChIndex, CY_DMAC_DESCRIPTOR_PING, &context->ptrCommonConfig->ptrDmaWrChSnsCfgAddrLocal[currSlotPos + currentSlotIndex]);
+    Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, chainWrChIndex, CY_DMAC_DESCRIPTOR_PING, &context->ptrCommonConfig->ptrDmaWrChSnsCfgAddr[currSlotPos + currentSlotIndex]);
     Cy_DMAC_Descriptor_SetDataCount(dmacBase, chainWrChIndex, CY_DMAC_DESCRIPTOR_PING, (endSlotIndex - currentSlotIndex + 1u));
 
     /* Configure the destination and data count for the Chain Read channel of DMAC */
-    Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, chainRdChIndex, CY_DMAC_DESCRIPTOR_PING, &context->ptrCommonConfig->ptrDmaRdChSnsCfgAddrLocal[currSlotPos + context->ptrInternalContext->firstValidSlot]);
-    Cy_DMAC_Descriptor_SetDataCount(dmacBase, chainRdChIndex, CY_DMAC_DESCRIPTOR_PING, context->ptrInternalContext->numValidSlots);
+    Cy_DMAC_Descriptor_SetSrcAddress(dmacBase, chainRdChIndex, CY_DMAC_DESCRIPTOR_PING, &context->ptrCommonConfig->ptrDmaRdChSnsCfgAddr[currSlotPos + currentSlotIndex]);
+    Cy_DMAC_Descriptor_SetDataCount(dmacBase, chainRdChIndex, CY_DMAC_DESCRIPTOR_PING, (endSlotIndex - currentSlotIndex + 1u));
 
     /* Enable DMAC channels to perform scanning */
     Cy_DMAC_Channel_Enable(dmacBase, chainRdChIndex);
 
-    return capStatus;
-}
-#endif /* (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
-
-
-#if (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-/*******************************************************************************
-* Function Name: Cy_CapSense_InitializeDmaArrays
-****************************************************************************//**
-*
-* Initializes DMA arrays used for scanning.
-*
-* \param context
-* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
-*
-* \return
-* Returns the status of operation.
-*
-*******************************************************************************/
-cy_capsense_status_t Cy_CapSense_InitializeDmaArrays(
-                cy_stc_capsense_context_t * context)
-{
-    cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_SUCCESS;
-    uint32_t slotIndex;
-    const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
-
-    for (slotIndex = 0u; slotIndex < (CY_CAPSENSE_SLOT_COUNT * CY_CAPSENSE_TOTAL_CH_NUMBER); slotIndex++)
-    {
-        ptrCommonCfg->ptrDmaWrChSnsCfgAddrLocal[slotIndex] = ptrCommonCfg->ptrDmaWrChSnsCfgAddr[slotIndex];
-        ptrCommonCfg->ptrDmaRdChSnsCfgAddrLocal[slotIndex] = ptrCommonCfg->ptrDmaRdChSnsCfgAddr[slotIndex];
-    }
-
-    context->ptrInternalContext->numValidSlots = CY_CAPSENSE_SLOT_COUNT_MAX_VALUE;
-
-    return capStatus;
-}
-#endif /* (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
-
-
-#if (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE)
-/*******************************************************************************
-* Function Name: Cy_CapSense_ConfigureDmaArrays
-****************************************************************************//**
-*
-* Configures DMA arrays used for scanning considering widget enable/disable
-* and working/non-working statuses.
-*
-* \param context
-* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
-*
-* \return
-* Returns the status of operation.
-*
-*******************************************************************************/
-cy_capsense_status_t Cy_CapSense_ConfigureDmaArrays(
-                cy_stc_capsense_context_t * context)
-{
-    uint32_t chIndex;
-    uint32_t slotOffset;
-    uint32_t slotIndex;
-    uint32_t slotStatus;
-    uint32_t wdIndex;
-    uint32_t rawPtrIndex = 0u;
-    cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_SUCCESS;
-    const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
-    cy_stc_capsense_internal_context_t * ptrIntrCxt = context->ptrInternalContext;
-    uint32_t * ptrSnsFrmCxt = &context->ptrSensorFrameContext[CY_CAPSENSE_SNS_CTL_INDEX];
-
-    ptrIntrCxt->numValidSlots = CY_CAPSENSE_SLOT_COUNT_MAX_VALUE;
-
-    /* Loops across all slots within one enabled channel */
-    for (slotIndex = 0u; slotIndex < CY_CAPSENSE_SLOT_COUNT; slotIndex++)
-    {
-        /* Gets status of a slot considering all channels */
-        slotStatus = Cy_CapSense_IsSlotEnabled(slotIndex, context);
-        /* Loops across all configured channels */
-        for (chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
-        {
-            slotOffset = chIndex * (CY_CAPSENSE_SLOT_COUNT * CY_MSC_6_SNS_REGS);
-            /* Disable sensor */
-            ptrSnsFrmCxt[slotOffset] &= (uint32_t)~MSC_SNS_CTL_VALID_Msk;
-            /* Mark sensors valid and store pointer to rawcount address */
-            if (0u != slotStatus)
-            {
-                ptrSnsFrmCxt[slotOffset] |= MSC_SNS_CTL_VALID_Msk;
-                wdIndex = context->ptrScanSlots[(chIndex * CY_CAPSENSE_SLOT_COUNT) + slotIndex].wdId;
-                if (0u != Cy_CapSense_IsWidgetEnabled(wdIndex, context))
-                {
-                    ptrCommonCfg->ptrDmaRdChSnsCfgAddrLocal[(chIndex * CY_CAPSENSE_SLOT_COUNT) + rawPtrIndex] =
-                            ptrCommonCfg->ptrDmaRdChSnsCfgAddr[(chIndex * CY_CAPSENSE_SLOT_COUNT) + slotIndex];
-                }
-                else
-                {
-                    ptrCommonCfg->ptrDmaRdChSnsCfgAddrLocal[(chIndex * CY_CAPSENSE_SLOT_COUNT) + rawPtrIndex] =
-                            ptrCommonCfg->ptrEmptyRawCount;
-                }
-            }
-        }
-        if (0u != slotStatus)
-        {
-            rawPtrIndex++;
-        }
-        ptrSnsFrmCxt = &ptrSnsFrmCxt[CY_MSC_6_SNS_REGS];
-    }
-
-    return capStatus;
+    return (capStatus);
 }
 #endif /* (CY_CAPSENSE_SCAN_MODE_DMA_DRIVEN == CY_CAPSENSE_SCAN_MODE) */
 
@@ -3385,7 +3216,7 @@ void Cy_CapSense_SetModClkDivider(
     }
     dividerValueLocal--;
 
-    switch (context->ptrCommonConfig->periDividerType)
+    switch(context->ptrCommonConfig->periDividerType)
     {
         case (uint8_t)CY_SYSCLK_DIV_8_BIT:
             dividerType = CY_SYSCLK_DIV_8_BIT;
@@ -3433,6 +3264,8 @@ void Cy_CapSense_SetModClkDivider(
 *     (8-9 scans) of RefCDAC with disabled CompCDAC
 * - CY_CAPSENSE_CAL_MODE_COMP_CDAC_SUC_APPR - The successive approximation
 *     (8-9 scans) of CompCDAC with fixed RefCDAC
+* - CY_CAPSENSE_CAL_MODE_COMP_CDAC_MAX_CODE - One scan with maximum
+*     CompCDAC and fixed RefCDAC
 *
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
@@ -3460,10 +3293,15 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
     uint32_t wdIndex;
     uint32_t chIndex;
     uint32_t maxRawTmp;
+    uint32_t snsClkTmp;
     uint32_t calMaskNext = CY_CAPSENSE_CAL_MIDDLE_VALUE;
     uint32_t calMaskPast = 0u;
     uint32_t calibrationBitEn = 0u;
     uint32_t sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
+    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) && (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
+        uint32_t dummyScanFlagEn = 1u;
+    #endif
+
     uint8_t * ptrCdac;
     uint32_t * ptrRawTarget;
     uint32_t rawTarget[CY_CAPSENSE_MAX_CH_NUM];
@@ -3476,86 +3314,72 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
         uint32_t * ptrSnsFrmCxtArray[CY_CAPSENSE_MAX_CH_NUM];
     #endif
 
-    if (0u != Cy_CapSense_IsSlotEnabled(scanSlotId, context))
+    /* Checks a slot for auto-calibration */
+    for(chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
     {
-        /* Checks a slot for auto-calibration */
-        for (chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
+        wdIndex = context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * chIndex)].wdId;
+        if (CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
         {
-            #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-                if (context->ptrInternalContext->hwConfigState != CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING)
+            /* Finds a sensing method for existing slot */
+            sensingGroup = context->ptrWdConfig[wdIndex].senseMethod;
+            /* Checks if the auto-calibration is enabled for the current sense method */
+            #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CALIBRATION_EN)
+                if(CY_CAPSENSE_CSX_GROUP == sensingGroup)
                 {
-                    /* Generates sensor frame configuration */
-                    Cy_CapSense_GenerateAllSensorConfig(chIndex,
-                                                    &context->ptrSensorFrameContext[(CY_CAPSENSE_SLOT_COUNT *
-                                                    (chIndex + context->ptrCommonConfig->channelOffset)) *
-                                                    CY_MSC_6_SNS_REGS], context);
+                    sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
                 }
+            #else
+
+                #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CDAC_REF_AUTO_USAGE)
+                    if((CY_CAPSENSE_CSX_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_REF_CDAC_SUC_APPR == autoCalibrMode))
+                    {
+                        sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
+                    }
+                #endif
+
+                #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE)
+                    if((CY_CAPSENSE_CSX_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_COMP_CDAC_SUC_APPR == autoCalibrMode))
+                    {
+                        sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
+                    }
+                #endif
             #endif
 
-            wdIndex = context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * chIndex)].wdId;
-            if (CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
-            {
-                /* Finds a sensing method for existing slot */
-                sensingGroup = context->ptrWdConfig[wdIndex].senseMethod;
-                /* Checks if the auto-calibration is enabled for the current sense method */
-                #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CALIBRATION_EN)
-                    if (CY_CAPSENSE_CSX_GROUP == sensingGroup)
+            #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CALIBRATION_EN)
+                if(CY_CAPSENSE_CSD_GROUP == sensingGroup)
+                {
+                    sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
+                }
+            #else
+
+                #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CDAC_REF_AUTO_USAGE)
+                    if((CY_CAPSENSE_CSD_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_REF_CDAC_SUC_APPR == autoCalibrMode))
                     {
                         sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
                     }
-                #else
-
-                    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CDAC_REF_AUTO_USAGE)
-                        if ((CY_CAPSENSE_CSX_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_REF_CDAC_SUC_APPR == autoCalibrMode))
-                        {
-                            sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
-                        }
-                    #endif
-
-                    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSX_CDAC_COMP_USAGE)
-                        if ((CY_CAPSENSE_CSX_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_COMP_CDAC_SUC_APPR == autoCalibrMode))
-                        {
-                            sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
-                        }
-                    #endif
                 #endif
 
-                #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CALIBRATION_EN)
-                    if (CY_CAPSENSE_CSD_GROUP == sensingGroup)
+                #if(CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE)
+                    if((CY_CAPSENSE_CSD_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_COMP_CDAC_SUC_APPR == autoCalibrMode))
                     {
                         sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
                     }
-                #else
-
-                    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CDAC_REF_AUTO_USAGE)
-                        if ((CY_CAPSENSE_CSD_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_REF_CDAC_SUC_APPR == autoCalibrMode))
-                        {
-                            sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
-                        }
-                    #endif
-
-                    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE)
-                        if ((CY_CAPSENSE_CSD_GROUP == sensingGroup) && (CY_CAPSENSE_CAL_MODE_COMP_CDAC_SUC_APPR == autoCalibrMode))
-                        {
-                            sensingGroup = CY_CAPSENSE_UNDEFINED_GROUP;
-                        }
-                    #endif
                 #endif
+            #endif
 
-                /* Different sensing methods not allowed in a single slot */
-                break;
-            }
+            /* Different sensing methods not allowed in a single slot */
+            break;
         }
     }
 
     /* Skips non-auto-calibrated slots */
     if (CY_CAPSENSE_UNDEFINED_GROUP != sensingGroup)
     {
-        for (chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
+        for(chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
         {
             /* Populates all sensors in widget */
             wdIndex = context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * chIndex)].wdId;
-            if (CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
+            if(CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
             {
                 calibrationBitEn |= (uint32_t)(0x01uL << chIndex);
 
@@ -3565,28 +3389,30 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
                 /* Gets target in percentage */
                 target = context->ptrInternalContext->intrCsdRawTarget;
 
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
-                    if (CY_CAPSENSE_CSX_GROUP == sensingGroup)
+                #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
+                    if(CY_CAPSENSE_CSX_GROUP == sensingGroup)
                     {
                         target = context->ptrInternalContext->intrCsxRawTarget;
                     }
                 #endif
 
-                maxRawTmp = context->ptrWdContext[wdIndex].maxRawCount;
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
+                snsClkTmp = context->ptrWdContext[wdIndex].snsClk;
+
+                #if(CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
                     if ((CY_CAPSENSE_CSD_GROUP == sensingGroup) && (ptrWdCfg->numCols <= snsIndex))
                     {
-                        maxRawTmp = context->ptrWdContext[wdIndex].maxRawCountRow;
+                        snsClkTmp = context->ptrWdContext[wdIndex].rowSnsClk;
                     }
                 #endif
 
+                maxRawTmp = Cy_CapSense_GetMaxRaw(snsClkTmp, ptrWdCfg, context);
                 rawTarget[chIndex] = (uint16_t)((maxRawTmp * target) / CY_CAPSENSE_PERCENTAGE_100);
                 ptrSnsCxtArray[chIndex] = &ptrWdCfg->ptrSnsContext[snsIndex];
                 ptrSnsCxtArray[chIndex]->cdacComp = 0u;
 
                 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-                    ptrSnsFrmCxtArray[chIndex] = &context->ptrSensorFrameContext[(CY_MSC_6_SNS_REGS *
-                                                ((context->ptrCommonConfig->numSlots * chIndex) + scanSlotId)) + CY_CAPSENSE_SNS_CDAC_CTL_INDEX];
+                    ptrSnsFrmCxtArray[chIndex] = &context->ptrSensorFrameContext[CY_MSC_6_SNS_REGS *
+                                                (context->ptrCommonConfig->numSlots * chIndex + scanSlotId) + CY_CAPSENSE_SNS_CDAC_CTL_INDEX];
                 #endif
             }
         }
@@ -3595,9 +3421,9 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
         do
         {
             ptrRawTarget = &rawTarget[0u];
-            for (chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
+            for(chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
             {
-                if (0u != (calibrationBitEn & (0x01uL << chIndex)))
+                if(0u != (calibrationBitEn & (0x01uL << chIndex)))
                 {
                     ptrSnsCxt = ptrSnsCxtArray[chIndex];
 
@@ -3606,7 +3432,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
                     #endif
                     /* Update CDACs based on scan result */
                     ptrCdac = &ptrSnsCxt->cdacComp;
-                    if (CY_CAPSENSE_CSD_GROUP == sensingGroup)
+                    if(CY_CAPSENSE_CSD_GROUP == sensingGroup)
                     {
                         if ((uint32_t)ptrSnsCxt->raw < *ptrRawTarget)
                         {
@@ -3621,7 +3447,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
                         }
                     }
                     *ptrCdac |= (uint8_t)calMaskNext;
-                    if (0u == *ptrCdac)
+                    if(0u == *ptrCdac)
                     {
                         (*ptrCdac)++;
                     }
@@ -3630,12 +3456,12 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
                         if (CY_CAPSENSE_CAL_MODE_REF_CDAC_SUC_APPR == autoCalibrMode)
                         {
                             *ptrSnsFrmCxt &= (uint32_t)~(MSC_SNS_CDAC_CTL_SEL_RE_Msk | MSC_SNS_CDAC_CTL_SEL_CO_Msk);
-                            *ptrSnsFrmCxt |= (((uint32_t)(*ptrCdac)) << MSC_SNS_CDAC_CTL_SEL_RE_Pos);
+                            *ptrSnsFrmCxt |= (uint32_t)(*ptrCdac << MSC_SNS_CDAC_CTL_SEL_RE_Pos);
                         }
                         else
                         {
                             *ptrSnsFrmCxt &= (uint32_t)~MSC_SNS_CDAC_CTL_SEL_CO_Msk;
-                            *ptrSnsFrmCxt |= (((uint32_t)(*ptrCdac)) << MSC_SNS_CDAC_CTL_SEL_CO_Pos);
+                            *ptrSnsFrmCxt |= (uint32_t)(*ptrCdac << MSC_SNS_CDAC_CTL_SEL_CO_Pos);
                         }
                     #else
                         (void)autoCalibrMode;
@@ -3647,10 +3473,11 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
             /* CTRL_MUX + CSX */
             #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) && (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
                 /* Dummy scan */
-                if (CY_CAPSENSE_CSX_GROUP == sensingGroup)
+                if ((0u != dummyScanFlagEn) && (CY_CAPSENSE_CSX_GROUP == sensingGroup))
                 {
                     calibStatus |= Cy_CapSense_ScanSlots(scanSlotId, 1u, context);
                     calibStatus |= Cy_CapSense_WaitEndScan(CY_CAPSENSE_CALIBRATION_TIMEOUT, context);
+                    dummyScanFlagEn = 0u;
                 }
             #endif
 
@@ -3658,10 +3485,10 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
             calibStatus |= Cy_CapSense_ScanSlots(scanSlotId, 1u, context);
             calibStatus |= Cy_CapSense_WaitEndScan(CY_CAPSENSE_CALIBRATION_TIMEOUT, context);
 
-            for (chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
+            for(chIndex = 0u; chIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; chIndex++)
             {
                 wdIndex = context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * chIndex)].wdId;
-                if (CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
+                if(CY_CAPSENSE_SLOT_SHIELD_ONLY > wdIndex)
                 {
                     snsIndex = context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * chIndex)].snsId;
                     Cy_CapSense_PreProcessSensor(wdIndex, snsIndex, context);
@@ -3676,7 +3503,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateSlot(
         while (calMaskPast != 0u);
     }
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -3727,18 +3554,18 @@ cy_capsense_status_t Cy_CapSense_NormalizeCdac(
     #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
         if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
         {
-            for (i = 0u; i < ptrWdCfg->numCols; i++)
+            for(i = 0u; i < ptrWdCfg->numCols; i++)
             {
-                if (ptrSnsCxt->cdacComp > maxRefCdac)
+                if(ptrSnsCxt->cdacComp > maxRefCdac)
                 {
                     maxRefCdac = ptrSnsCxt->cdacComp;
                 }
                 ptrSnsCxt->cdacComp = 0u;
                 ptrSnsCxt++;
             }
-            for (i = ptrWdCfg->numCols; i < ptrWdCfg->numSns; i++)
+            for(i = ptrWdCfg->numCols; i < ptrWdCfg->numSns; i++)
             {
-                if (ptrSnsCxt->cdacComp > maxRowRefCdac)
+                if(ptrSnsCxt->cdacComp > maxRowRefCdac)
                 {
                     maxRowRefCdac = ptrSnsCxt->cdacComp;
                 }
@@ -3772,9 +3599,9 @@ cy_capsense_status_t Cy_CapSense_NormalizeCdac(
         if (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
         {
             /* CSX Widget */
-            for (i = 0u; i < ptrWdCfg->numSns; i++)
+            for(i = 0u; i < ptrWdCfg->numSns; i++)
             {
-                if (ptrSnsCxt->cdacComp > maxRefCdac)
+                if(ptrSnsCxt->cdacComp > maxRefCdac)
                 {
                     maxRefCdac = ptrSnsCxt->cdacComp;
                 }
@@ -3791,7 +3618,7 @@ cy_capsense_status_t Cy_CapSense_NormalizeCdac(
 
     #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
         ptrSnsFrmCxt = &context->ptrSensorFrameContext[CY_CAPSENSE_SNS_CDAC_CTL_INDEX];
-        for (i = 0u; i < (CY_CAPSENSE_SLOT_COUNT * CY_CAPSENSE_TOTAL_CH_NUMBER); i++)
+        for (i = 0u; i < CY_CAPSENSE_SLOT_COUNT * CY_CAPSENSE_TOTAL_CH_NUMBER; i++)
         {
             if (widgetId == context->ptrScanSlots[i].wdId)
             {
@@ -3808,7 +3635,7 @@ cy_capsense_status_t Cy_CapSense_NormalizeCdac(
         }
     #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) */
 
-    return CY_CAPSENSE_STATUS_SUCCESS;
+    return (CY_CAPSENSE_STATUS_SUCCESS);
 }
 #endif
 
@@ -3861,6 +3688,10 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
     uint32_t rawTemp;
     uint32_t target;
     uint32_t j;
+    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) && (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
+        uint32_t dummyScanFlagEn = 1u;
+    #endif
+
     const cy_stc_capsense_widget_config_t * ptrWdCfg = &context->ptrWdConfig[widgetId];
     uint32_t compDivDefault = ptrWdCfg->ptrWdContext->snsClk;
 
@@ -3874,7 +3705,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
     #endif /* (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) */
 
     /* Defines initial value for Compensation Divider including rows and cols */
-    #if ((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+    #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
         if ((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) &&
             (((uint8_t)CY_CAPSENSE_WD_MATRIX_BUTTON_E == ptrWdCfg->wdType) ||
@@ -3896,7 +3727,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
     #endif
 
     target = context->ptrInternalContext->intrCsdRawTarget;
-    if (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
+    if(CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
     {
         target = context->ptrInternalContext->intrCsxRawTarget;
     }
@@ -3947,10 +3778,11 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
                 /* CTRL_MUX + CSX */
                 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) && (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
                     /* Dummy scan */
-                    if (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
+                    if ((0u != dummyScanFlagEn) && (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod))
                     {
                         calibStatus |= Cy_CapSense_ScanSlots(curSlotIndex, 1u, context);
                         calibStatus |= Cy_CapSense_WaitEndScan(CY_CAPSENSE_CALIBRATION_TIMEOUT, context);
+                        dummyScanFlagEn = 0u;
                     }
                 #endif
                 calibStatus |= Cy_CapSense_ScanSlots(curSlotIndex, 1u, context);
@@ -3967,7 +3799,7 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
 
                         rawTemp = ptrWdCfg->ptrSnsContext[snsIndex].raw;
 
-                        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
+                        if(CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
                         {
                             if (rawTemp > target)
                             {
@@ -3998,10 +3830,9 @@ cy_capsense_status_t Cy_CapSense_CalibrateCompDivider(
         {
             break;
         }
-    } while ((compDivDefault > CY_CAPSENSE_CDAC_COMP_DIV_MIN_MSCV3) &&
-             (CY_CAPSENSE_STATUS_SUCCESS == calibStatus));
+    } while ((compDivDefault > 1u) && (CY_CAPSENSE_STATUS_SUCCESS == calibStatus));
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -4045,11 +3876,13 @@ cy_capsense_status_t Cy_CapSense_VerifyCalibration(
 
     /* CTRL_MUX + CSX */
     #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) && (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
+        uint32_t dummyScanFlagEn = 1u;
         /* Dummy scan */
-        if (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
+        if ((0u != dummyScanFlagEn) && (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod))
         {
             calibStatus |= Cy_CapSense_ScanSlots(ptrWdCfg->firstSlotId, 1u, context);
             calibStatus |= Cy_CapSense_WaitEndScan(CY_CAPSENSE_CALIBRATION_TIMEOUT, context);
+            dummyScanFlagEn = 0u;
         }
     #endif
 
@@ -4079,13 +3912,13 @@ cy_capsense_status_t Cy_CapSense_VerifyCalibration(
         }
 
         /* Finds max raw count value */
-        temp = context->ptrWdContext[widgetId].maxRawCount;
+        temp = Cy_CapSense_GetMaxRaw(context->ptrWdContext[widgetId].snsClk, ptrWdCfg, context);
 
         /* Checks raw count of each sensor */
         ptrSnsCxt = &ptrWdCfg->ptrSnsContext[0u];
         if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
         {
-            for (snsIndex = 0u; snsIndex < ptrWdCfg->numCols; snsIndex++)
+            for(snsIndex = 0u; snsIndex < ptrWdCfg->numCols; snsIndex++)
             {
                 if ((ptrSnsCxt->raw < ((temp * lowerLimit) / CY_CAPSENSE_PERCENTAGE_100)) ||
                     (ptrSnsCxt->raw > ((temp * upperLimit) / CY_CAPSENSE_PERCENTAGE_100)))
@@ -4095,9 +3928,9 @@ cy_capsense_status_t Cy_CapSense_VerifyCalibration(
                 }
                 ptrSnsCxt++;
             }
-            temp = context->ptrWdContext[widgetId].maxRawCountRow;
+            temp = Cy_CapSense_GetMaxRaw(context->ptrWdContext[widgetId].rowSnsClk, ptrWdCfg, context);
 
-            for (snsIndex = ptrWdCfg->numCols; snsIndex < ptrWdCfg->numSns; snsIndex++)
+            for(snsIndex = ptrWdCfg->numCols; snsIndex < ptrWdCfg->numSns; snsIndex++)
             {
                 if ((ptrSnsCxt->raw < ((temp * lowerLimit) / CY_CAPSENSE_PERCENTAGE_100)) ||
                     (ptrSnsCxt->raw > ((temp * upperLimit) / CY_CAPSENSE_PERCENTAGE_100)))
@@ -4110,7 +3943,7 @@ cy_capsense_status_t Cy_CapSense_VerifyCalibration(
         }
         else
         {
-            for (snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
+            for(snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
             {
                 if ((ptrSnsCxt->raw < ((temp * lowerLimit) / CY_CAPSENSE_PERCENTAGE_100)) ||
                     (ptrSnsCxt->raw > ((temp * upperLimit) / CY_CAPSENSE_PERCENTAGE_100)))
@@ -4123,7 +3956,7 @@ cy_capsense_status_t Cy_CapSense_VerifyCalibration(
         }
     }
 
-    return calibStatus;
+    return (calibStatus);
 }
 #endif
 
@@ -4156,7 +3989,7 @@ void Cy_CapSense_SetCompDivider(
     const cy_stc_capsense_scan_slot_t * ptrScanSlots = context->ptrScanSlots;
     uint32_t compensationCdacDivider = context->ptrWdContext[widgetId].cdacCompDivider;
 
-    if (0u != compensationCdacDivider)
+    if (0 != compensationCdacDivider)
     {
         compensationCdacDivider--;
     }
@@ -4261,7 +4094,7 @@ cy_capsense_status_t Cy_CapSense_WaitEndScan(
         watchdogCounter = Cy_CapSense_WatchdogCyclesNum(timeout, cpuFreqMHz, isBusyLoopDuration);
         while (CY_CAPSENSE_NOT_BUSY != Cy_CapSense_IsBusy(context))
         {
-            if (0uL == watchdogCounter)
+            if(0uL == watchdogCounter)
             {
                 status = CY_CAPSENSE_STATUS_TIMEOUT;
                 break;
@@ -4270,42 +4103,63 @@ cy_capsense_status_t Cy_CapSense_WaitEndScan(
         }
     }
 
-    return status;
+    return (status);
 }
 
 
 #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
 /*******************************************************************************
-* Function Name: Cy_CapSense_SlotPinState_V3
+* Function Name: Cy_CapSense_SlotPinState
 ****************************************************************************//**
 *
-* The internal function that configures the specified electrode to the desired state
-* in the specified Active slot by updating the CAPSENSE&trade; configuration.
+* Configures the desired electrode to the specified state by
+* updating the CAPSENSE&trade; configuration.
 *
-* See the Cy_CapSense_SlotPinState() description for details.
+* This function changes / overwrites configuration of an electrode (several
+* pins in case the electrode is ganged to more pins) with a state provided
+* by pinState parameter. The function does this only for the mentioned slot ID.
+* If a pin should have the desired state during several scans, the function
+* should be called multiple times for the each desired slot.
 *
-* \note
-* This function is available for the fifth-generation (only
-* for CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD) and the fifth-generation
-* low power CAPSENSE&trade;. For the fourth-generation CAPSENSE&trade; and
-* the fifth-generation CAPSENSE&trade; with
-* CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD use Cy_CapSense_SetPinState().
-* For Low Power slots for the fifth-generation low power CAPSENSE&trade;
-* use Cy_CapSense_LpSlotPinState().
+* The re-configuration is possible when
+* parameter Sensor connection method = CTRLMUX.
+* If parameter Sensor connection method = AMUXBUS, then the function
+* returns CY_CAPSENSE_STATUS_BAD_CONFIG. In next releases
+* the Cy_CapSense_SetPinState() function will be provided for the AMUXBUS
+* configuration.
+*
+* The function changes the configuration of an electrode without storing
+* the default state. A user is responsible to keep the default state to
+* revert to the default settings if needed. Also, the default settings
+* can be configured again by calling Cy_CapSense_Enable() function that
+* leads to repeating CAPSENSE&trade; Data Structure initialization, repeating
+* DAC auto-calibration and repeating base-lining.
+*
+* Using this function is not recommended. This function is used to
+* implement only the user's specific use cases (as changing the CAPSENSE&trade;
+* default configuration).
+*
+* Call this function from CAPSENSE&trade; Data Structure Initialization Callback
+* ptrEODsInitCallback. For details of how to register callback see
+* the \ref group_capsense_callbacks section. That avoids repeating of
+* DAC auto-calibration and base-lining since the callback is called after
+* CAPSENSE&trade; Data Structure initialization but before the first initialization
+* scan.
+*
+* The function is a low-level function and does not perform verification of
+* input parameters (like slot ID, pointers, etc.). For example,
+* CY_CAPSENSE_CTRLMUX_PIN_STATE_SHIELD is not available if shield is not configured
+* in the project.
 *
 * \param slotId
-* The slot ID to change the pin state for (Active slot ID for
-* the fifth-generation low power CAPSENSE&trade;).
+* The desired slot ID.
 *
 * \param ptrEltdCfg
 * The pointer to an electrode the all pins states of which will be configured
 * as pinState parameter.
 *
 * \param pinState
-* The parameter have different values for the fifth- and the fifth-generation
-* low power CAPSENSE&trade;.
-*
-* The desired pins state for CSX widget electrodes can be:
+* The desired pins state for CSX widget electrodes:
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_RX - Rx electrode.
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_TX - Tx electrode.
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_GND - Grounded.
@@ -4313,8 +4167,7 @@ cy_capsense_status_t Cy_CapSense_WaitEndScan(
 *     (for multi-phase TX method).
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_HIGH_Z - Unconnected (high-z).
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_VDDA2 - Connected to VDDA/2.
-*
-* The desired pins state for CSD widget electrodes can be:
+* The desired pins state for CSD widget electrodes:
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_SNS - Self-cap sensor.
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_HIGH_Z - Unconnected (high-z).
 * * CY_CAPSENSE_CTRLMUX_PIN_STATE_GND - Grounded.
@@ -4330,44 +4183,34 @@ cy_capsense_status_t Cy_CapSense_WaitEndScan(
 *                                         called with the current CAPSENSE&trade;
 *                                         configuration.
 *
-* \funcusage
-* \snippet capsense/snippet/main.c snippet_Cy_CapSense_SlotPinState
-*
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_SlotPinState_V3(
+cy_capsense_status_t Cy_CapSense_SlotPinState(
                 uint32_t slotId,
                 const cy_stc_capsense_electrode_config_t * ptrEltdCfg,
                 uint32_t pinState,
                 cy_stc_capsense_context_t * context)
 {
     uint32_t i;
-    uint32_t mask;
-    uint32_t * ptrSnsFrm;
-    cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_BAD_CONFIG;
-
-    mask = 0u;
-    ptrSnsFrm = &context->ptrSensorFrameContext[(((uint32_t)ptrEltdCfg->chId * CY_CAPSENSE_SLOT_COUNT) + slotId) *
-                                                CY_MSC_6_SNS_REGS];
-    capStatus = CY_CAPSENSE_STATUS_SUCCESS;
+    uint32_t mask = 0u;
+    uint32_t * ptrSnsFrm = &context->ptrSensorFrameContext[(((uint32_t)ptrEltdCfg->chId *
+                                CY_CAPSENSE_SLOT_COUNT) + slotId) * CY_MSC_6_SNS_REGS];
+    cy_capsense_status_t capStatus = CY_CAPSENSE_STATUS_SUCCESS;
 
     for (i = 0u; i < ptrEltdCfg->numPins; i++)
     {
-        mask |= 0x01uL << ptrEltdCfg->ptrPin[i].padNumber;
+        mask |= 0x01uL << ptrEltdCfg->ptrPin->padNumber;
     }
 
     for (i = 0u; i < CY_CAPSENSE_CTRLMUX_PIN_STATE_MASK_NUMBER; i++)
     {
         ptrSnsFrm[i] &= ~mask;
-        if (0u != (pinState & (1uL << (CY_CAPSENSE_CTRLMUX_PIN_STATE_MASK_NUMBER - 1u - i))))
+        if (0u != (pinState & (1u << (CY_CAPSENSE_CTRLMUX_PIN_STATE_MASK_NUMBER - 1u - i))))
         {
             ptrSnsFrm[i] |= mask;
         }
     }
 
-    /* Set undefined value to initiate frame re-configuration in Cy_CapSense_ScanSlots() function */
-    context->ptrInternalContext->currentSlotIndex = CY_CAPSENSE_SLOT_COUNT_MAX_VALUE;
-
-    return capStatus;
+    return (capStatus);
 }
 #endif
 
@@ -4414,28 +4257,12 @@ cy_capsense_status_t Cy_CapSense_SwitchHwConfiguration(
             case CY_CAPSENSE_HW_CONFIG_CAPTURED_DEFAULT:
                 break;
             case CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING:
-                #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-                    if (CY_CAPSENSE_SCAN_SNGL_SLOT == context->ptrInternalContext->scanSingleSlot)
-                    {
-                        for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-                        {
-                            /* Disconnect the scanned sensor */
-                            Cy_CapSense_DisconnectSensor(curChIndex, context);
-                        }
-                    }
-                #endif
                 break;
             #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_HW_GROUP_EN)
                 case CY_CAPSENSE_HW_CONFIG_BIST_FUNCTIONALITY:
                     Cy_CapSense_BistDisableMode(context);
                     break;
             #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_HW_GROUP_EN) */
-            case CY_CAPSENSE_HW_CONFIG_CHANNEL_SATURATION:
-                break;
-            #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN)
-                case CY_CAPSENSE_HW_CONFIG_AUTO_DITHERING:
-                    break;
-            #endif
             default:
                 capStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
                 break;
@@ -4450,7 +4277,7 @@ cy_capsense_status_t Cy_CapSense_SwitchHwConfiguration(
                 case CY_CAPSENSE_HW_CONFIG_CAPTURED_DEFAULT:
                     break;
                 case CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING:
-                    Cy_CapSense_SetModClkDivider(context->ptrInternalContext->modClk, context);
+                    Cy_CapSense_SetModClkDivider(context->ptrCommonContext->modClk, context);
                     Cy_CapSense_SetIOsInDefaultState(context);
                     #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_SHIELD_EN)
                         Cy_CapSense_SetShieldPinsInDefaultState(context);
@@ -4473,10 +4300,10 @@ cy_capsense_status_t Cy_CapSense_SwitchHwConfiguration(
                         #endif
 
                         /* MSCv3 IP Block Base Register Configuration */
-                        mscStatus = Cy_MSC_Configure(ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase,
+                        mscStatus = Cy_MSC_Configure(ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase,
                                                     &context->ptrBaseFrameContext[curChIndex],
                                                     CY_MSC_CAPSENSE_KEY,
-                                                    ptrCommonCfg->ptrChConfig[curChIndex].ptrHwContext);
+                                                    ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscContext);
                         if (CY_MSC_SUCCESS != mscStatus)
                         {
                             capStatus = CY_CAPSENSE_STATUS_HW_BUSY;
@@ -4484,34 +4311,23 @@ cy_capsense_status_t Cy_CapSense_SwitchHwConfiguration(
                         }
 
                         /* Clear all pending interrupts of the MSC HW block */
-                        ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-                        (void)ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR;
+                        ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
+                        (void)ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->INTR;
                     }
                     break;
                 case CY_CAPSENSE_HW_CONFIG_BIST_FUNCTIONALITY:
                     Cy_CapSense_SetIOsInDefaultState(context);
-
-                    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_SHIELD_EN)
-                        Cy_CapSense_SetShieldPinsInDefaultState(context);
-                    #endif
+                    Cy_CapSense_SetShieldPinsInDefaultState(context);
 
                     for (curChIndex = 0u; curChIndex < context->ptrCommonConfig->numChannels; curChIndex++)
                     {
                         context->ptrActiveScanSns[curChIndex].currentSenseMethod = CY_CAPSENSE_UNDEFINED_GROUP;
                         Cy_CapSense_SetCmodInDefaultState(curChIndex, context);
                         /* Clear all pending interrupts of the MSC HW block */
-                        ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-                        (void)ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR;
+                        ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
+                        (void)ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase->INTR;
                     }
                     break;
-                case CY_CAPSENSE_HW_CONFIG_CHANNEL_SATURATION:
-                    capStatus = Cy_CapSense_ConfigureSaturationMode(context);
-                    break;
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN)
-                    case CY_CAPSENSE_HW_CONFIG_AUTO_DITHERING:
-                        capStatus = Cy_CapSense_ConfigureAutoDitherMode(context);
-                        break;
-                #endif
                 default:
                     capStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
                     break;
@@ -4523,7 +4339,7 @@ cy_capsense_status_t Cy_CapSense_SwitchHwConfiguration(
         }
     }
 
-    return capStatus;
+    return (capStatus);
 }
 
 
@@ -4563,10 +4379,10 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
         ptrWdCxt = ptrWdCfg->ptrWdContext;
         snsClkSrc = ptrWdCxt->snsClkSource;
 
-        if ((0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_SSC_AUTO_MASK)) ||
+        if((0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_SSC_AUTO_MASK)) ||
            (CY_CAPSENSE_CLK_SOURCE_SSC == (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_MASK)))
         {
-            if (0u != (ptrWdCxt->lfsrBits & CY_CAPSENSE_LFSR_BITS_AUTO_MASK))
+            if(0u != (ptrWdCxt->lfsrBits & CY_CAPSENSE_LFSR_BITS_AUTO_MASK))
             {
                 /*
                 * Execute the LFSR range auto-selection functionality when the
@@ -4577,7 +4393,7 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
                 ptrWdCxt->lfsrBits = (uint8_t)Cy_CapSense_GetLfsrBitsAuto(ptrWdCfg, context);
             }
 
-            if (0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_SSC_AUTO_MASK))
+            if(0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_SSC_AUTO_MASK))
             {
                 /*
                 * Execute SSC auto-selection functionality when the
@@ -4588,7 +4404,7 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
                 ptrWdCxt->snsClkSource = (uint8_t)Cy_CapSense_GetClkSrcSSCAuto(ptrWdCfg, context);
             }
         }
-        else if (0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_PRS_AUTO_MASK))
+        else if(0u != (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_PRS_AUTO_MASK))
         {
             /*
             * Execute PRS auto-selection functionality when the
@@ -4609,7 +4425,7 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
         }
 
         /* Determine the MIN valid Sense Clock divider for the used sensing method. */
-        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
+        if(CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
         {
             snsClkDivMin = CY_CAPSENSE_4PH_DIRECT_SNS_CLOCK_DIVIDER_MIN;
         }
@@ -4623,27 +4439,27 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
         * range if the Sense Clock source parameter is configured with the SSC
         * option.
         */
-        if (CY_CAPSENSE_CLK_SOURCE_SSC == (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_MASK))
+        if(CY_CAPSENSE_CLK_SOURCE_SSC == (snsClkSrc & CY_CAPSENSE_CLK_SOURCE_MASK))
         {
             lfsrRange = ptrWdCxt->lfsrBits;
             lfsrRange &= (uint32_t)(~((uint32_t)CY_CAPSENSE_LFSR_BITS_AUTO_MASK));
-            snsClkDivMin += Cy_CapSense_GetLfsrDitherVal(lfsrRange, context->ptrInternalContext->lfsrScale);
+            snsClkDivMin += Cy_CapSense_GetLfsrDitherVal(lfsrRange, context->ptrCommonContext->lfsrScale);
         }
 
         /* Perform validation if the Sense Clock divider is within the valid range. */
-        if ((ptrWdCxt->snsClk < snsClkDivMin) ||
+        if((ptrWdCxt->snsClk < snsClkDivMin) ||
            (ptrWdCxt->snsClk > CY_CAPSENSE_DIRECT_SNS_CLOCK_DIVIDER_MAX))
         {
             retVal = CY_CAPSENSE_STATUS_BAD_CLOCK_CONFIG;
         }
 
-        #if ((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+        #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
             (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
-            if ((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) &&
+            if((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) &&
                 (((uint8_t)CY_CAPSENSE_WD_MATRIX_BUTTON_E == ptrWdCfg->wdType) ||
                 ((uint8_t)CY_CAPSENSE_WD_TOUCHPAD_E == ptrWdCfg->wdType)))
             {
-                if ((ptrWdCxt->rowSnsClk < snsClkDivMin) ||
+                if((ptrWdCxt->rowSnsClk < snsClkDivMin) ||
                    (ptrWdCxt->rowSnsClk > CY_CAPSENSE_DIRECT_SNS_CLOCK_DIVIDER_MAX))
 
                 {
@@ -4664,7 +4480,7 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
         ptrWdCfg++;
     }
 
-    if (CY_CAPSENSE_STATUS_SUCCESS == retVal)
+    if(CY_CAPSENSE_STATUS_SUCCESS == retVal)
     {
         /* Set pro wait and epi cycle number to max in case of PRS is configured at least for one widget */
         if (0u != prsConfigured)
@@ -4675,11 +4491,11 @@ cy_capsense_status_t Cy_CapSense_InitializeSourceSenseClk(const cy_stc_capsense_
         else
         {
             context->ptrInternalContext->numEpiCycles = context->ptrCommonConfig->numEpiCycles;
-            context->ptrInternalContext->numFineInitWaitCycles = CY_CAPSENSE_NUM_FINE_INIT_CYCLES;
+            context->ptrInternalContext->numFineInitWaitCycles = context->ptrCommonContext->numFineInitWaitCycles;
         }
     }
 
-    return retVal;
+    return (retVal);
 }
 
 
@@ -4714,12 +4530,12 @@ uint32_t Cy_CapSense_GetLfsrBitsAuto(
 
     ptrWdCxt = ptrWdConfig->ptrWdContext;
     snsClkDividerTmp = ptrWdCxt->snsClk;
-    lfsrScale = context->ptrInternalContext->lfsrScale;
+    lfsrScale = context->ptrCommonContext->lfsrScale;
     ditherLimitPercents = ptrWdConfig->lfsrDitherLimit;
 
-    #if ((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+    #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
-        if ((CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod) &&
+        if((CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod) &&
            (((uint8_t)CY_CAPSENSE_WD_MATRIX_BUTTON_E == ptrWdConfig->wdType) ||
             ((uint8_t)CY_CAPSENSE_WD_TOUCHPAD_E == ptrWdConfig->wdType)))
         {
@@ -4728,7 +4544,7 @@ uint32_t Cy_CapSense_GetLfsrBitsAuto(
             * The LFSR range should be determined, basing on the MIN Sense Clock
             * divider in order to be sufficient for rows and columns.
             */
-            if (snsClkDividerTmp > ptrWdCxt->rowSnsClk)
+            if(snsClkDividerTmp > ptrWdCxt->rowSnsClk)
             {
                 snsClkDividerTmp = ptrWdCxt->rowSnsClk;
             }
@@ -4736,7 +4552,7 @@ uint32_t Cy_CapSense_GetLfsrBitsAuto(
     #endif
 
     /* Determine the MIN valid Sense Clock divider for the used sensing method. */
-    if (CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod)
+    if(CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod)
     {
         snsClkDividerMin = CY_CAPSENSE_4PH_DIRECT_SNS_CLOCK_DIVIDER_MIN;
     }
@@ -4794,7 +4610,7 @@ uint32_t Cy_CapSense_GetClkSrcSSCAuto(
     uint32_t snsClkDivMin;
     uint32_t subConvNumber;
     const cy_stc_capsense_widget_context_t * ptrWdCxt;
-    #if ((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+    #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
         uint32_t snsClkSrcRow;
     #endif
@@ -4806,13 +4622,13 @@ uint32_t Cy_CapSense_GetClkSrcSSCAuto(
     * Measurement conversions).
     */
     subConvNumber = ptrWdCxt->numSubConversions;
-    subConvNumber += context->ptrInternalContext->numFineInitCycles;
+    subConvNumber += context->ptrCommonContext->numFineInitCycles;
     if (CY_CAPSENSE_16_BIT_MASK < subConvNumber)
     {
         subConvNumber = CY_CAPSENSE_16_BIT_MASK;
     }
     lfsrRange = ((uint32_t)ptrWdCxt->lfsrBits & (uint32_t)(~((uint32_t)CY_CAPSENSE_LFSR_BITS_AUTO_MASK)));
-    lfsrScale = context->ptrInternalContext->lfsrScale;
+    lfsrScale = context->ptrCommonContext->lfsrScale;
     autoSelMode = ptrWdConfig->snsClkSourceAutoSelMode;
     ditherLimitPercents = ptrWdConfig->lfsrDitherLimit;
 
@@ -4820,7 +4636,7 @@ uint32_t Cy_CapSense_GetClkSrcSSCAuto(
     * Determine the polynomial duration in clock cycles, e.g. the duration of 8-bit
     * polynomial is 255 clock cycles.
     */
-    lfsrPolySize = Cy_CapSense_GetPolySize(context->ptrInternalContext->lfsrPoly);
+    lfsrPolySize = Cy_CapSense_GetPolySize(context->ptrCommonContext->lfsrPoly);
 
     /*
     * Determine the clock dithering variation for the specifies LFSR range,
@@ -4829,7 +4645,7 @@ uint32_t Cy_CapSense_GetClkSrcSSCAuto(
     lfsrDitherCycles = Cy_CapSense_GetLfsrDitherVal(lfsrRange, lfsrScale);
 
     /* Determine the MIN valid Sense Clock divider for the used sensing method. */
-    if (CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod)
+    if(CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod)
     {
         snsClkDivMin = CY_CAPSENSE_4PH_DIRECT_SNS_CLOCK_DIVIDER_MIN;
     }
@@ -4854,23 +4670,23 @@ uint32_t Cy_CapSense_GetClkSrcSSCAuto(
     snsClkSrc = Cy_CapSense_RunSSCAuto(autoSelMode, lfsrDitherCycles,
                                     ditherLimitCycles, lfsrPolySize, subConvNumber);
 
-    #if ((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
+    #if((CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_MATRIX_EN) ||\
         (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CSD_TOUCHPAD_EN))
         /* Repeat the SSC-Auto selection routine for the row of two-dimension CSD
          * widget.
          */
-        if ((CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod) &&
+        if((CY_CAPSENSE_CSD_GROUP == ptrWdConfig->senseMethod) &&
            (((uint8_t)CY_CAPSENSE_WD_MATRIX_BUTTON_E == ptrWdConfig->wdType) ||
             ((uint8_t)CY_CAPSENSE_WD_TOUCHPAD_E == ptrWdConfig->wdType)))
         {
-            if ((uint8_t)CY_CAPSENSE_CLK_SOURCE_DIRECT != snsClkSrc)
+            if((uint8_t)CY_CAPSENSE_CLK_SOURCE_DIRECT != snsClkSrc)
             {
                 ditherLimitCycles = Cy_CapSense_GetLfsrDitherLimit(ptrWdCxt->rowSnsClk,
                                                 snsClkDivMin, ditherLimitPercents, lfsrScale);
                 snsClkSrcRow = Cy_CapSense_RunSSCAuto(autoSelMode, lfsrDitherCycles,
                                                 ditherLimitCycles, lfsrPolySize, (uint16_t)subConvNumber);
 
-                if (snsClkSrc != snsClkSrcRow)
+                if(snsClkSrc != snsClkSrcRow)
                 {
                     /*
                     * If the automatically determined Sense Clock sources for
@@ -4936,7 +4752,7 @@ uint32_t Cy_CapSense_RunSSCAuto(
     uint32_t snsClkSrc = CY_CAPSENSE_CLK_SOURCE_SSC;
 
     /* Check if the Sense Clock variation is lower than MAX allowed. */
-    if (lfsrDitherCycles > ditherLimitCycles)
+    if(lfsrDitherCycles > ditherLimitCycles)
     {
         snsClkSrc = CY_CAPSENSE_CLK_SOURCE_DIRECT;
     }
@@ -4946,9 +4762,9 @@ uint32_t Cy_CapSense_RunSSCAuto(
     * during the scan. This part of code is executed if the Clock Source
     * auto selection mode is set to Medium or Strong.
     */
-    if (autoSelMode != CY_CAPSENSE_SNS_CLK_SOURCE_AUTO_SEL_MODE_WEAK)
+    if(autoSelMode != CY_CAPSENSE_SNS_CLK_SOURCE_AUTO_SEL_MODE_WEAK)
     {
-        if (subConvNumber < lfsrPolySize)
+        if(subConvNumber < lfsrPolySize)
         {
             snsClkSrc = CY_CAPSENSE_CLK_SOURCE_DIRECT;
         }
@@ -4959,15 +4775,15 @@ uint32_t Cy_CapSense_RunSSCAuto(
     * during the scan. This part of code is executed if the Clock Source
     * auto selection mode is set to Strong.
     */
-    if (autoSelMode == CY_CAPSENSE_SNS_CLK_SOURCE_AUTO_SEL_MODE_STRONG)
+    if(autoSelMode == CY_CAPSENSE_SNS_CLK_SOURCE_AUTO_SEL_MODE_STRONG)
     {
-        if (0u != (subConvNumber % lfsrPolySize))
+        if(0u != (subConvNumber % lfsrPolySize))
         {
             snsClkSrc = CY_CAPSENSE_CLK_SOURCE_DIRECT;
         }
     }
 
-    return snsClkSrc;
+    return (snsClkSrc);
 }
 
 
@@ -5008,13 +4824,13 @@ uint32_t Cy_CapSense_GetClkSrcPRSAuto(
     * Measurement conversions).
     */
     subConvNumber = ptrWdContext->numSubConversions;
-    subConvNumber += context->ptrInternalContext->numFineInitCycles;
+    subConvNumber += context->ptrCommonContext->numFineInitCycles;
 
     /*
     * Determine the polynomial duration in clock cycles, e.g. the duration of 8-bit
     * polynomial is 255 clock cycles.
     */
-    lfsrPolySize = Cy_CapSense_GetPolySize(context->ptrInternalContext->lfsrPoly);
+    lfsrPolySize = Cy_CapSense_GetPolySize(context->ptrCommonContext->lfsrPoly);
 
     /*
     * The number of rising edges per one PRS period is (polyLength + 1) / 4.
@@ -5026,7 +4842,7 @@ uint32_t Cy_CapSense_GetClkSrcPRSAuto(
     * Check if at least one whole polynomial period will be performed
     * during the scan.
     */
-    if (subConvNumber < risingEdgesNum)
+    if(subConvNumber < risingEdgesNum)
     {
         snsClkSrc = CY_CAPSENSE_CLK_SOURCE_DIRECT;
     }
@@ -5056,13 +4872,13 @@ uint32_t Cy_CapSense_GetPolySize(uint32_t lfsrPoly)
     uint32_t polySize = 0xFFFFu;
     uint32_t polyMsbMask = 0x8000u;
 
-    while ((1u < polySize) && (0u == (lfsrPoly & polyMsbMask)))
+    while((1u < polySize) && (0u == (lfsrPoly & polyMsbMask)))
     {
         polySize >>= 1u;
         polyMsbMask >>= 1u;
     }
 
-    return polySize;
+    return(polySize);
 }
 
 
@@ -5110,15 +4926,15 @@ uint32_t Cy_CapSense_GetLfsrBitsNumber(
                                                        ditherLimitPercents, lfsrScale);
 
     /* Based in the MAX allowed clock dithering, Determines the LFSR_BITS option. */
-    if (CY_CAPSENSE_LFSR_RANGE_3_DITHER_MAX <= ditherLimitCycles)
+    if(CY_CAPSENSE_LFSR_RANGE_3_DITHER_MAX <= ditherLimitCycles)
     {
         retVal = CY_CAPSENSE_LFSR_BITS_RANGE_3;
     }
-    else if (CY_CAPSENSE_LFSR_RANGE_2_DITHER_MAX <= ditherLimitCycles)
+    else if(CY_CAPSENSE_LFSR_RANGE_2_DITHER_MAX <= ditherLimitCycles)
     {
         retVal = CY_CAPSENSE_LFSR_BITS_RANGE_2;
     }
-    else if (CY_CAPSENSE_LFSR_RANGE_1_DITHER_MAX <= ditherLimitCycles)
+    else if(CY_CAPSENSE_LFSR_RANGE_1_DITHER_MAX <= ditherLimitCycles)
     {
         retVal = CY_CAPSENSE_LFSR_BITS_RANGE_1;
     }
@@ -5127,7 +4943,7 @@ uint32_t Cy_CapSense_GetLfsrBitsNumber(
         retVal = CY_CAPSENSE_LFSR_BITS_RANGE_0;
     }
 
-    return retVal;
+    return (retVal);
 }
 
 
@@ -5205,12 +5021,12 @@ uint32_t Cy_CapSense_GetLfsrDitherLimit(
     * Determine the minimal value to eliminate violation of allowed Sense Clock
     * divider range.
     */
-    if (ditherLimitCycles > ditherLimitCyclesMax)
+    if(ditherLimitCycles > ditherLimitCyclesMax)
     {
         ditherLimitCycles = ditherLimitCyclesMax;
     }
 
-    return ditherLimitCycles;
+    return (ditherLimitCycles);
 }
 
 
@@ -5246,11 +5062,10 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
     cy_capsense_status_t autoTuneStatus = CY_CAPSENSE_STATUS_SUCCESS;
     uint32_t i;
     uint32_t j;
-    uint32_t watchdogCounter;
+    uint32_t range;
     MSC_Type * mscBase;
     uint32_t curChIndex;
     uint32_t rawCountMax;
-    uint32_t numberSubConv;
     cy_stc_capsense_hw_smartsense_config_t autoTuneConfig;
     const cy_stc_capsense_widget_config_t * ptrWdCfg;
     cy_stc_capsense_widget_context_t * ptrWdCxt;
@@ -5269,27 +5084,30 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
 
     /* Step #0: Check if configuration is valid */
     if ((ptrCommonCfg->counterMode != CY_CAPSENSE_COUNTER_MODE_SATURATE) ||
+        ((ptrCommonCfg->csdCdacCompDivAutoEn != CY_CAPSENSE_ENABLE) && (ptrCommonCfg->csdCdacCompEn == CY_CAPSENSE_ENABLE)) ||
+        (ptrCommonCfg->csdRefCdacAutoEn != CY_CAPSENSE_ENABLE) ||
         (ptrCommonCfg->numWd > CY_CAPSENSE_SMARTSENSE_WD_MAX_NUMBER))
     {
         autoTuneStatus |= CY_CAPSENSE_STATUS_BAD_CONFIG;
     }
 
-    /* Step #1: Sets the default parameters for preliminary scans */
+    /* Step #1: Sets the default parameters for the preliminary scanning */
     ptrWdCfg = context->ptrWdConfig;
     for (i = 0u; i < ptrCommonCfg->numWd; i++)
     {
+        /*
+        * Set the Sense Clock source set to Direct.
+        * Since the Number of Epilogue cycles is a common parameter, it is required
+        * to configure the Sense Clock source to Direct for all widgets (including CSX)
+        * in order to have correct number of Epilogue cycles for operation with
+        * the Direct clock.The setup of the Epilogue cycles number is the part of
+        * the Cy_CapSense_InitializeSourceSenseClk() routine.
+        */
+        ptrWdCxt = ptrWdCfg->ptrWdContext;
+        ptrWdCxt->snsClkSource <<= CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_POS;
+
         if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
         {
-            /*
-            * Set the Sense Clock source set to Direct.
-            * Since the Number of Epilogue cycles is a common parameter, it is required
-            * to configure the Sense Clock source to Direct for all widgets (including CSX)
-            * in order to have correct number of Epilogue cycles for operation with
-            * the Direct clock.The setup of the Epilogue cycles number is the part of
-            * the Cy_CapSense_InitializeSourceSenseClk() routine.
-            */
-            ptrWdCxt = ptrWdCfg->ptrWdContext;
-            ptrWdCxt->snsClkSource <<= CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_POS;
             ptrWdCxt->numSubConversions = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_NSUB;
             ptrWdCxt->cdacRef = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_REF_CDAC;
             ptrWdCxt->rowCdacRef = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_REF_CDAC;
@@ -5308,7 +5126,7 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
 
     for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
     {
-        mscBase = ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase;
+        mscBase = ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase;
 
         mscBase->SCAN_CTL2 &= (uint32_t)~((uint32_t)MSC_SCAN_CTL2_NUM_EPI_CYCLES_Msk);
         mscBase->SCAN_CTL2 |= (uint32_t)((uint32_t)CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_SNS_CLK <<
@@ -5320,29 +5138,65 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
     }
 
     /* Step #2: Execute preliminary scan */
-    autoTuneStatus |= Cy_CapSense_SwitchHwConfiguration(CY_CAPSENSE_HW_CONFIG_REGULAR_SCANNING, context);
     autoTuneStatus |= Cy_CapSense_ScanAllSlots(context);
+    while (CY_CAPSENSE_NOT_BUSY != Cy_CapSense_IsBusy(context)) {}
 
-    /* Initialize the watchdog counter to prevent a hang */
-    watchdogCounter = Cy_CapSense_WatchdogCyclesNum(CY_CAPSENSE_CALIBRATION_TIMEOUT,
-                                                    (context->ptrCommonConfig->cpuClkHz / CY_CAPSENSE_CONVERSION_MEGA),
-                                                    CY_CAPSENSE_LOOP_DURATION_CYCLES);
+    /* Step #3: Update settings for the widgets / sensors with low capacitance */
+    ptrWdCfg = context->ptrWdConfig;
+    for (i = 0u; i < ptrCommonCfg->numWd; i++)
+    {
+        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
+        {
+            ptrWdCxt = ptrWdCfg->ptrWdContext;
+            range = 0u;
+            rawCountMax = ((uint32_t)ptrCommonCfg->csdRawTarget * context->ptrWdContext[i].maxRawCount) /
+                    CY_CAPSENSE_PERCENTAGE_100;
+            for (j = 0u; j < ptrWdCfg->numSns; j++)
+            {
+                if (rawCountMax < ptrWdCfg->ptrSnsContext[j].raw)
+                {
+                    /* Next Widget */
+                    range = 1u;
+                    break;
+                }
+            }
+            /* Lower capacitance range */
+            if (range == 0u)
+            {
+                ptrWdCxt->numSubConversions = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_NSUB_RANGE2;
+                ptrWdCxt->snsClk = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_SNS_CLK_RANGE2;
+                ptrWdCxt->rowSnsClk = CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_SNS_CLK_RANGE2;
+            }
+        }
+        ptrWdCfg++;
+    }
+    autoTuneStatus |= Cy_CapSense_SsInitialize(context);
 
-    /* Wait till the end of preliminary scans for the calculated timeout */
-    autoTuneStatus |= Cy_CapSense_WaitEndScan(watchdogCounter, context);
+    for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
+    {
+        mscBase = ptrCommonCfg->ptrMscChConfig[curChIndex].ptrMscBase;
 
-    /*
-     * Step #3: Calculate sensor capacitances, sense clock dividers, and sub-conversion numbers depending on the configured
-     * serial resistances, and finger capacitances for each sensor
-     */
-    autoTuneConfig.modClock = ptrCommonCfg->periClkHz / context->ptrInternalContext->modClk;
+        mscBase->SCAN_CTL2 &= (uint32_t)~((uint32_t)MSC_SCAN_CTL2_NUM_EPI_CYCLES_Msk);
+        mscBase->SCAN_CTL2 |= (uint32_t)((uint32_t)CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_SNS_CLK <<
+                                                   MSC_SCAN_CTL2_NUM_EPI_CYCLES_Pos);
+
+        mscBase->INIT_CTL4 &= (uint32_t)~((uint32_t)MSC_INIT_CTL4_NUM_PRO_WAIT_CYCLES_Msk);
+        mscBase->INIT_CTL4 |= (uint32_t)((uint32_t)CY_CAPSENSE_SMARTSENSE_PRELIMINARY_SCAN_SNS_CLK <<
+                                                   MSC_INIT_CTL4_NUM_PRO_WAIT_CYCLES_Pos);
+    }
+
+    /* Step #4: Execute 8-step calibration scan in single RefCDAC mode */
+    (void)Cy_CapSense_CalibrateAllSlots(context);
+
+    /* Step #5: Within each widget find a sensor with max Cp / raw count */
+    autoTuneConfig.modClock = ptrCommonCfg->periClkHz / ptrCommonCxt->modClk;
     autoTuneConfig.snsResistance = ptrCommonCfg->csdRConst;
     autoTuneConfig.correctionCoeff = CY_CAPSENSE_SENSOR_CONNECTION_MODE;
 
     ptrWdCfg = context->ptrWdConfig;
-    for (i = 0u; i < CY_CAPSENSE_WIDGET_COUNT; i++)
+    for (i = 0u; i < ptrCommonCfg->numWd; i++)
     {
-        if ((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) && (0u != Cy_CapSense_IsWidgetEnabled(i, context)))
+        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
         {
             ptrWdCxt = ptrWdCfg->ptrWdContext;
             autoTuneConfig.kRef0 = ptrWdCxt->snsClk;
@@ -5359,63 +5213,31 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
                 }
             }
 
+            /* Step #6: Calculates capacitance, clock divider and number of sub-conversions */
             autoTuneConfig.raw = (uint16_t)rawCountMax;
             (void)Cy_CapSense_GetSmartSenseCapacitance(&autoTuneConfig);
             autoTuneConfig.snsCapacitance /= ptrWdCfg->numChopCycles;
             (void)Cy_CapSense_GetSmartSenseFrequencyDivider(&autoTuneConfig);
-
-            #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_MULTI_FREQUENCY_WIDGET_EN)
-                /* Check for sub-widget */
-                if (0u != (ptrWdCfg->mfsConfig & CY_CAPSENSE_MFS_EN_MASK))
-                {
-                    if (0u != (ptrWdCfg->mfsConfig & CY_CAPSENSE_MFS_WIDGET_FREQ_CH_1_MASK))
-                    {
-                        autoTuneConfig.kRef1 += CY_CAPSENSE_CSD_MFS_DIVIDER_OFFSET_F1;
-                    }
-
-                    if (0u != (ptrWdCfg->mfsConfig & CY_CAPSENSE_MFS_WIDGET_FREQ_CH_2_MASK))
-                    {
-                        autoTuneConfig.kRef1 += CY_CAPSENSE_CSD_MFS_DIVIDER_OFFSET_F2;
-                    }
-                }
-            #endif
-
-            /* Configure widget sense clock divider by the calculated value */
-            ptrWdCxt->snsClk = autoTuneConfig.kRef1;
-            ptrWdCxt->rowSnsClk = autoTuneConfig.kRef1;
-
             (void)Cy_CapSense_GetSmartSenseNumSubconversions(&autoTuneConfig);
-
-            /* Calculates max possible Nsub value */
-            numberSubConv = MSC_RESULT_FIFO_RD_RAW_COUNT_Msk >> MSC_RESULT_FIFO_RD_RAW_COUNT_Pos;
-            numberSubConv /= autoTuneConfig.kRef1;
-
-            /* Limits Nsub to avoid RawCount overflow */
-            if ((uint16_t)numberSubConv > autoTuneConfig.nSub1)
+            ptrWdCxt->numSubConversions = autoTuneConfig.nSub1 / ptrWdCfg->numChopCycles;
+            /* Perform adjusting of sense clock divider mainly for high Cp */
+            autoTuneConfig.kRef1 = (autoTuneConfig.kRef1 * CY_CAPSENSE_SMARTSENSE_SCALING_DECI_VAL) /
+                    CY_CAPSENSE_SMARTSENSE_CORRECTION;
+            autoTuneConfig.kRef1 = (autoTuneConfig.kRef1 + CY_CAPSENSE_SMARTSENSE_ROUND_UP_2_BITS_MASK) &
+                    (uint32_t)~CY_CAPSENSE_SMARTSENSE_ROUND_UP_2_BITS_MASK;
+            if (CY_CAPSENSE_SMARTSENSE_MAX_KREF_VAL < autoTuneConfig.kRef1)
             {
-                numberSubConv = autoTuneConfig.nSub1;
+                autoTuneConfig.kRef1 = CY_CAPSENSE_SMARTSENSE_MAX_KREF_VAL;
             }
 
-            ptrWdCxt->numSubConversions = (uint16_t)numberSubConv / ptrWdCfg->numChopCycles;
-            /* Decrease Nsub when CompCDAC is enabled as it increases the sensitivity approximately twice */
-            #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_CDAC_COMP_USAGE)
-                ptrWdCxt->numSubConversions >>= 1u;
-                numberSubConv = (uint32_t)ptrWdCxt->numSubConversions << 1u;
-            #endif
-            numberSubConv *= ptrWdCfg->numChopCycles;
-
-            /*
-             * numberSubConv contains real value including chopping and compensation.
-             * autoTuneConfig.nSub1 contains initially calculated value.
-             * So, correcting the initially calculated sensitivity.
-             */
-            autoTuneConfig.sigPFC = (uint16_t)((numberSubConv * autoTuneConfig.sigPFC) / autoTuneConfig.nSub1);
+            ptrWdCxt->snsClk = autoTuneConfig.kRef1;
+            ptrWdCxt->rowSnsClk = autoTuneConfig.kRef1;
             ptrWdCxt->sigPFC = autoTuneConfig.sigPFC;
         }
         ptrWdCfg++;
     }
 
-    /* Step #4: Align SnsClkDiv and Nsub for multi-channel solution */
+    /* Step #6.b: Align SnsClkDiv and Nsub for multi-channel solution */
     #if (CY_CAPSENSE_TOTAL_CH_NUMBER > 1u)
         /* Implemented faster algorithm to align frequency across all slots */
         ptrWdCfg = context->ptrWdConfig;
@@ -5506,18 +5328,14 @@ cy_capsense_status_t Cy_CapSense_SsAutoTune(cy_stc_capsense_context_t * context)
         Cy_CapSense_SsAutoTuneScanDurationAlignment(wdIdMask, maxDivider, maxSubconversions, context);
     #endif /* (CY_CAPSENSE_TOTAL_CH_NUMBER > 1u) */
 
-    /* Step #5: Restore project parameters */
+    /* Step #7: Assigning clock sources and restore project parameters */
     ptrWdCxt = context->ptrWdContext;
-    for (i = 0u; i < CY_CAPSENSE_WIDGET_COUNT; i++)
+    for (i = 0u; i < ptrCommonCfg->numWd; i++)
     {
-        if ((CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod) && (0u != Cy_CapSense_IsWidgetEnabled(i, context)))
-        {
-            ptrWdCxt = ptrWdCfg->ptrWdContext;
-            /* Reverting back original customer's settings */
-            ptrWdCxt->snsClkSource = (uint8_t)(((uint32_t)ptrWdCxt->snsClkSource >> CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_POS) &
-                                     ~CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_MASK);
-        }
-        ptrWdCfg++;
+        /* Reverting back original customer's settings */
+        ptrWdCxt->snsClkSource = (uint8_t)(((uint32_t)ptrWdCxt->snsClkSource >> CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_POS) &
+                ~CY_CAPSENSE_CLK_SOURCE_SMARTSENSE_MASK);
+        ptrWdCxt++;
     }
 
     autoTuneStatus |= Cy_CapSense_SsInitialize(context);
@@ -5572,915 +5390,55 @@ void Cy_CapSense_SsAutoTuneScanDurationAlignment(
 #endif
 
 
-#if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CIC2_FILTER_EN)
 /*******************************************************************************
-* Function Name: Cy_CapSense_GetCIC2SamplesMax
+* Function Name: Cy_CapSense_GetMaxRaw
 ****************************************************************************//**
 *
-* This internal function determines the MAX number of CIC2 samples for specified
-* decimation rate that can be accumulated in the internal CIC2 HW register
-* with no overflow.
+* Returns the theoretical MAX raw count for desired frequency channel.
 *
-* \param cic2Rate
-* CIC2 decimation rate.
+* \param snsClk
+* The divider value for the sense clock.
 *
-* \return
-* The MAX allowed number of CIC2 samples.
-*
-*******************************************************************************/
-uint32_t Cy_CapSense_GetCIC2SamplesMax(
-                uint32_t cic2Rate)
-{
-    uint32_t retVal;
-
-    retVal = CY_CAPSENSE_CIC2_ACC_MAX_VAL / (cic2Rate * cic2Rate);
-
-    return retVal;
-}
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_GetCIC2HwDivider
-****************************************************************************//**
-*
-* This internal function determines the value of the divider that will be
-* applied to the data, accumulated by the CIC2 HW for the specified number of
-* samples.
-*
-* \param cic2Samples
-* The number of CIC2 samples for the specified sensing parameters. This value
-* can be obtained by using the Cy_CapSense_GetCIC2SamplesNum function.
-*
-* \return
-* The CIC2 HW divider value.
-*
-*******************************************************************************/
-uint32_t Cy_CapSense_GetCIC2HwDivider(
-                uint32_t cic2Samples)
-{
-    uint32_t cic2Divider;
-
-    if (cic2Samples > CY_CAPSENSE_CIC2_DIVIDER_8)
-    {
-        cic2Divider = CY_CAPSENSE_CIC2_DIVIDER_16;
-    }
-    else if (cic2Samples > CY_CAPSENSE_CIC2_DIVIDER_4)
-    {
-        cic2Divider = CY_CAPSENSE_CIC2_DIVIDER_8;
-    }
-    else if (cic2Samples > CY_CAPSENSE_CIC2_DIVIDER_2)
-    {
-        cic2Divider = CY_CAPSENSE_CIC2_DIVIDER_4;
-    }
-    else if (cic2Samples > CY_CAPSENSE_CIC2_DIVIDER_1)
-    {
-        cic2Divider = CY_CAPSENSE_CIC2_DIVIDER_2;
-    }
-    else
-    {
-        cic2Divider = CY_CAPSENSE_CIC2_DIVIDER_1;
-    }
-
-    return cic2Divider;
-}
-#endif /* #if (CY_CAPSENSE_DISABLE != CY_CAPSENSE_CIC2_FILTER_EN) */
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_ExecuteSaturatedScan
-****************************************************************************//**
-*
-* This internal function executes a scan with the saturated channel to obtain
-* the MAX raw count or the scan duration for the specified scan slot.
-*
-* \param ptrMaxRaw
-* Specifies the pointer to store the resulting MAX raw count value.
-*
-* \param scanSlotId
-* The slot ID scans will be done for.
-*
-* \param mode
-* Saturated scan execution mode:
-* - CY_CAPSENSE_SATURATED_MAX_COUNT   - Used to obtain the MAX raw count.
-* - CY_CAPSENSE_SATURATED_SCAN_TIME   - Used to obtain the scan duration in terms of Mod Clock cycles.
+* \param ptrWdConfig
+* Specifies the pointer to a widget configuration structure.
 *
 * \param context
-* The pointer to the context structure allocated by the user or middleware.
+* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
 *
 * \return
-* Returns the status of the operation:
-* - CY_CAPSENSE_STATUS_SUCCESS      - The operation is performed successfully.
-* - CY_CAPSENSE_STATUS_TIMEOUT      - A timeout reached during the scan time measurement.
-* - CY_CAPSENSE_STATUS_BAD_PARAM    - Not valid input parameter.
-* - CY_CAPSENSE_STATUS_HW_BUSY      - The MSCLP HW block is busy and cannot be
-*                                     switched to another mode.
+* Theoretical MAX raw count.
 *
 *******************************************************************************/
-cy_capsense_status_t Cy_CapSense_ExecuteSaturatedScan(
-                uint32_t * ptrMaxRaw,
-                uint32_t scanSlotId,
-                uint32_t mode,
-                cy_stc_capsense_context_t * context)
+uint32_t Cy_CapSense_GetMaxRaw(
+                uint32_t snsClk,
+                const cy_stc_capsense_widget_config_t * ptrWdConfig,
+                const cy_stc_capsense_context_t * context)
 {
-    uint32_t tmpVal;
-    uint32_t watchdog;
-    uint32_t scanConfigTmp[CY_MSC_6_SNS_REGS];
-    cy_capsense_status_t status;
-    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-        uint32_t * ptrSnsFrame;
+    uint32_t maxRawTmp;
+
+    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CIC2_FILTER_EN)
+        uint32_t snsClkTmp;
     #endif
 
-    const uint32_t cpuCyclesPerLoop = 5u;
-    MSC_Type * ptrHwBase = context->ptrCommonConfig->ptrChConfig[0u].ptrHwBase;
-
-    (void)mode;
-
-    /* Configures the MSC HW block for operation with the permanently saturated channel. */
-    status = Cy_CapSense_SwitchHwConfiguration(CY_CAPSENSE_HW_CONFIG_CHANNEL_SATURATION, context);
-
-    /* The MSC0 HW block will be used to perform measurements. Rest of MSC HW blocks will be disabled. */
-    for (tmpVal = 1u; tmpVal < CY_CAPSENSE_TOTAL_CH_NUMBER; tmpVal++)
-    {
-        ptrHwBase = context->ptrCommonConfig->ptrChConfig[tmpVal].ptrHwBase;
-        ptrHwBase->CTL &= (~MSC_CTL_ENABLED_Msk);
-    }
-
-    ptrHwBase = context->ptrCommonConfig->ptrChConfig[0u].ptrHwBase;
-
-    /* Disable CIC2 filtering to measure the scan duration in in terms of Mod Clock cycles */
-    ptrHwBase->FILTER_CTL &= (~MSC_FILTER_CTL_FILTER_MODE_Msk);
-
-    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CIC2_FILTER_EN)
-        if (CY_CAPSENSE_SATURATED_MAX_COUNT == mode)
+    #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CIC2_FILTER_EN)
+        snsClkTmp = snsClk;
+        if(CY_CAPSENSE_CLK_SOURCE_PRS == (ptrWdConfig->ptrWdContext->snsClkSource & CY_CAPSENSE_CLK_SOURCE_MASK))
         {
-            /* Keep CIC2 filtering enabled if it is used in the current MW configuration
-             * to measure the MAX raw count.
-             */
-            ptrHwBase->FILTER_CTL |= (MSC_FILTER_CTL_FILTER_MODE_Msk);
+            snsClkTmp <<= CY_CAPSENSE_PRS_SNS_KREF_SHIFT;
         }
-    #endif
 
-    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-        /* Obtain the scan parameters offset in the cy_capsense_sensorFrameContext[]
-         * array for the slots that are part of Active widgets.
-         */
-        tmpVal = scanSlotId * CY_MSC_6_SNS_REGS;
-        /* The code below sets up configuration of the sense control registers. */
-        ptrSnsFrame = &context->ptrSensorFrameContext[tmpVal];
-        scanConfigTmp[3u] = ptrSnsFrame[3u]; /* Set up the SNS_SCAN_CTL register configuration. */
-        scanConfigTmp[4u] = ptrSnsFrame[4u]; /* Set up the SNS_CDAC_CTL register configuration. */
-        scanConfigTmp[5u] = ptrSnsFrame[5u]; /* Set up the SNS_CTL register configuration. */
+        maxRawTmp = (((uint32_t)context->ptrInternalContext->numEpiCycles * ptrWdConfig->numChopCycles) - 1u) +
+                (((uint32_t)ptrWdConfig->ptrWdContext->numSubConversions * ptrWdConfig->numChopCycles) * snsClkTmp);
     #else
-        for (tmpVal = 0u; tmpVal < CY_CAPSENSE_TOTAL_CH_NUMBER; tmpVal++)
-        {
-            context->ptrActiveScanSns[tmpVal].currentChannelSlotIndex = (uint16_t)scanSlotId;
-        }
-        (void)Cy_CapSense_GenerateSensorConfig(0u, scanSlotId, &scanConfigTmp[0u], context);
+        maxRawTmp = (uint32_t)ptrWdConfig->ptrWdContext->cicRate * ptrWdConfig->ptrWdContext->cicRate;
+        (void)snsClk;
+        (void)context;
     #endif
+    maxRawTmp = (maxRawTmp > MSC_STATUS1_RAW_COUNT_Msk) ?
+                 ((uint16_t)MSC_STATUS1_RAW_COUNT_Msk) : maxRawTmp;
 
-    /* The measurement with a saturated channel will be performed with all the sensors disconnected.
-     * The code below sets up the configuration of the MASK registers with 0x00000000u.
-     * The SW_SEL_CSW_FUNC[0u] is configured in the scope of the Cy_CapSense_ConfigureSaturationMode()
-     * routine with all the switches open.
-     */
-    scanConfigTmp[0u] = 0x00u; /* Set up the SNS_SW_SEL_CSW_MASK2 register configuration. */
-    scanConfigTmp[1u] = 0x00u; /* Set up the SNS_SW_SEL_CSW_MASK1 register configuration. */
-    scanConfigTmp[2u] = 0x00u; /* Set up the SNS_SW_SEL_CSW_MASK0 register configuration. */
-
-    scanConfigTmp[3u] &= (uint32_t)(~MSC_SNS_SCAN_CTL_NUM_CONV_Msk); /* Disable System Chopping */
-
-    if (status == CY_CAPSENSE_STATUS_SUCCESS)
-    {
-        /* Initiate the scan in the CPU operating mode */
-        Cy_MSC_ConfigureScan(ptrHwBase, CY_MSC_6_SNS_REGS, &scanConfigTmp[0u]);
-
-        /* Disable clock sync and external frame start */
-        ptrHwBase->CTL &= ~(MSC_CTL_CLK_SYNC_EN_Msk | MSC_CTL_EXT_FRAME_START_EN_Msk);
-
-        /* Clear all pending interrupts */
-        ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-        (void)ptrHwBase->INTR;
-
-        /* Set the multi-channel mode configuration to OFF */
-        ptrHwBase->SNS_CTL &= (~MSC_SNS_CTL_MULTI_CH_MODE_Msk);
-
-        /* Configure the last slot */
-        ptrHwBase->SNS_CTL |= MSC_SNS_CTL_LAST_Msk | MSC_SNS_CTL_VALID_Msk;
-
-        /* Start scanning with START_SCAN */
-        ptrHwBase->SNS_CTL |= MSC_SNS_CTL_START_SCAN_Msk;
-
-        /* Start FSM with START_FRAME */
-        ptrHwBase->FRAME_CMD = MSC_FRAME_CMD_START_FRAME_Msk;
-
-        watchdog = Cy_CapSense_GetScanWatchdogTime(scanSlotId, context);
-        tmpVal = context->ptrCommonConfig->cpuClkHz / CY_CAPSENSE_CONVERSION_MEGA;
-        watchdog = Cy_CapSense_WatchdogCyclesNum(watchdog, tmpVal, cpuCyclesPerLoop);
-
-        while ((ptrHwBase->INTR & MSC_INTR_MASK_SCAN_Msk) == 0u)
-        {
-            if (0uL == watchdog)
-            {
-                break;
-            }
-            watchdog--;
-        }
-
-        tmpVal = (uint16_t)ptrHwBase->RESULT_FIFO_RD;
-
-        #if (CY_CAPSENSE_DISABLE == CY_CAPSENSE_CIC2_FILTER_EN)
-            tmpVal -= ((uint32_t)context->ptrInternalContext->numEpiCycles - 1u);
-            tmpVal *= context->ptrWdConfig->numChopCycles;
-        #endif
-
-        *ptrMaxRaw = CY_CAPSENSE_16_BIT_MASK;
-        if (tmpVal <= CY_CAPSENSE_16_BIT_MASK)
-        {
-            *ptrMaxRaw = (uint16_t)tmpVal;
-        }
-
-        /* Clear all pending interrupts */
-        ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-        (void)ptrHwBase->INTR;
-
-        /* Restore clock sync and external frame start settings */
-        ptrHwBase->CTL |= (uint32_t)(((uint32_t)context->ptrCommonConfig->syncFrameStartEn << MSC_CTL_EXT_FRAME_START_EN_Pos) |
-                                     ((uint32_t)context->ptrCommonConfig->syncClockEn << MSC_CTL_CLK_SYNC_EN_Pos));
-
-        if (0u == watchdog)
-        {
-            status |= CY_CAPSENSE_STATUS_TIMEOUT;
-        }
-    }
-
-    return status;
+    return maxRawTmp;
 }
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_ConfigureSaturationMode
-****************************************************************************//**
-*
-* Configures the MSC HW block for operation with the permanently saturated
-* channel.
-* The raw data counter is continuously enabled from the beginning to the end of
-* the scan. The scan is performed in the CPU operating mode.
-*
-* \param context
-* The pointer to the context structure allocated by the user or middleware.
-*
-* \return
-* Returns the status of the operation:
-* - CY_CAPSENSE_STATUS_SUCCESS          - The operation is performed successfully.
-* - CY_CAPSENSE_STATUS_HW_BUSY          - The MSCLP HW block is busy and cannot be
-*                                         configured.
-*
-*******************************************************************************/
-cy_capsense_status_t Cy_CapSense_ConfigureSaturationMode(
-                cy_stc_capsense_context_t * context)
-{
-    cy_capsense_status_t status = CY_CAPSENSE_STATUS_SUCCESS;
-    cy_en_msc_status_t mscStatus;
-    uint32_t curChIndex;
-    uint32_t i;
-    MSC_Type * ptrHwBase;
-    const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
-
-    /* Initializes all enabled MSC channels for scan */
-    for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-    {
-        ptrHwBase = ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase;
-
-        /* Generates base frame configurations for all enabled MSC channels */
-        status |= Cy_CapSense_GenerateBaseConfig(curChIndex, context);
-
-        if (CY_CAPSENSE_STATUS_SUCCESS != status)
-        {
-            break;
-        }
-
-        #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-            /* Generates sensor frame configuration */
-            Cy_CapSense_GenerateAllSensorConfig(curChIndex,
-                                            &context->ptrSensorFrameContext[(CY_CAPSENSE_SLOT_COUNT *
-                                            (curChIndex + context->ptrCommonConfig->channelOffset)) *
-                                            CY_MSC_6_SNS_REGS], context);
-        #endif
-
-        /* MSCv3 IP Block Base Register Configuration */
-        mscStatus = Cy_MSC_Configure(ptrHwBase,
-                                    &context->ptrBaseFrameContext[curChIndex],
-                                    CY_MSC_CAPSENSE_KEY,
-                                    ptrCommonCfg->ptrChConfig[curChIndex].ptrHwContext);
-
-        if (CY_MSC_SUCCESS != mscStatus)
-        {
-            status = CY_CAPSENSE_STATUS_HW_BUSY;
-        }
-    }
-
-    if (CY_CAPSENSE_STATUS_SUCCESS == status)
-    {
-        ptrHwBase = context->ptrCommonConfig->ptrChConfig[0u].ptrHwBase;
-
-        /* Enables HW IP to allow a scan frame start */
-        ptrHwBase->CTL |= MSC_CTL_ENABLED_Msk;
-
-        /* Disables all interrupts */
-        ptrHwBase->INTR_MASK = 0x00u;
-        (void)ptrHwBase->INTR_MASK;
-
-        /* The 0x00 value of the OPERATING_MODE field switches the HW to the CPU
-        * configures it to generate VDDA/2 voltage at the output.
-        */
-        CY_REG32_CLR_SET(ptrHwBase->CTL, MSC_CTL_OPERATING_MODE, 0u);
-
-        /* Configures the Switch Control Global Function #0 to have all switches open.
-        * All the sensing electrodes will be disconnected during the MAX raw count measurement.
-        */
-        ptrHwBase->SW_SEL_CSW_FUNC[0u] = 0x00u;
-
-        /* Iterates through all the MODE structures and update them with the configuration,
-        * required to saturate the measurement channel.
-        */
-        for (i = 0u; i < MSC0_SENSE_MODE_NR; i++)
-        {
-            /* The 0x01 value of the RMF field enables the internal voltage divider and
-            * configures it to generate VDDA/2 voltage at the output.
-            */
-            ptrHwBase->MODE[i].SW_SEL_TOP  = _VAL2FLD(MSC_MODE_SW_SEL_TOP_RMF, 0x01u);
-
-            /* Sets the CPF and the CMG bits to get the positive comparator input connected
-            * to the VDDA/2 voltage level and the negative comparator input to the GND.
-            */
-            ptrHwBase->MODE[i].SW_SEL_COMP = _VAL2FLD(MSC_MODE_SW_SEL_COMP_CPF, 0x01u) |
-                                            _VAL2FLD(MSC_MODE_SW_SEL_COMP_CMG, 0x01u);
-        }
-    }
-
-    return status;
-}
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_GetScanWatchdogTime
-****************************************************************************//**
-*
-* This internal function calculates the watchdog time in microseconds for the
-* specified slot. The calculated value is the duration of one sample with the
-* five-time margin.
-*
-* WATCHDOG_TIME = (SCAN_CYCLES / MOD_CLK_FREQ) * 5;
-*
-* where:
-*
-* SCAN_CYCLES = INIT_CYCLES + (PRO_CYCLES + CONV_CYCLES + EPI_CYCLES) * NUM_CONV;
-* INIT_CYCLES = INIT_CMOD_RAIL_CYCLES + INIT_CMOD_SHORT_CYCLES;
-* PRO_CYCLES = PRO_OFFSET_CYCLES + PRO_WAIT_KREF_DELAY;
-* CONV_CYCLES = (PRO_DUMMY_SUB_CONVS + NUM_SUB_CONVS) * SENSE_DIV;
-* EPI_CYCLES = EPI_KREF_DELAY;
-*
-* The corresponding parameters are listed below:
-* - EPI_KREF_DELAY - The duration of EPILOGUE defined in relation to Kref.
-*   The value is interpreted as number of clk_mod cycles.
-* - INIT_CMOD_RAIL_CYCLES - Duration of the coarse initialization phase when
-*   Cmod1 is connected to VDDA and Cmod2 is connected to VSSA. The parameter is
-*   defined in terms of Mod Clock cycles.
-* - INIT_CMOD_SHORT_CYCLES - Duration of the coarse short phase when
-*   Cmod1 and Cmod2 are shorted together. The parameter is defined in terms of
-*   Mod Clock cycles.
-* - PRO_OFFSET_CYCLES - Maximum number of Mod Clock cycles to be assigned for
-*   the PRO_OFFSET state. If NUM_PRO_OFFSET_TRIPS are observed before this
-*   timeout, exit at that point.
-* - PRO_DUMMY_SUB_CONVS - Number of sub-conversions (dummy cycles) to be run
-*   during PRO_DUMMY.
-* - PRO_WAIT_KREF_DELAY - The duration of PRO_WAIT defined in relation to Kref.
-*   The value is interpreted as SENSE_DIV increments.
-* - SENSE_DIV - The length of one sub-conversion in terms of Mod Clock cycles.
-* - NUM_SUB_CONVS - Number of sub-conversions.
-* - NUM_CONV - Number of chop cycles.
-* - MOD_CLK_FREQ - Modulation clock frequency.
-*
-* \param scanSlotId
-* The slot ID the watchdog time calculation will be done for.
-*
-* \param context
-* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
-*
-* \return
-* Returns watch-dog time interval in microseconds.
-*
-*******************************************************************************/
-uint32_t Cy_CapSense_GetScanWatchdogTime(
-                uint32_t scanSlotId,
-                cy_stc_capsense_context_t * context)
-{
-    uint32_t tmpVal;
-    uint32_t snsClkDivider;
-    uint32_t modClkFreqMhz;
-    const cy_stc_capsense_widget_config_t * ptrWdCfg;
-    const cy_stc_capsense_scan_slot_t * ptrScanSlots;
-
-    /* Define the MARGIN_KOEFF = 5 */
-    const uint32_t watchdogTimeMarginCoeff = 5u;
-
-    modClkFreqMhz  = context->ptrCommonConfig->periClkHz;
-    modClkFreqMhz /= context->ptrInternalContext->modClk;
-    modClkFreqMhz /= CY_CAPSENSE_CONVERSION_MEGA;
-
-    /* Initialize pointers with the configuration address for the specified scan slot and MSC channel #0 */
-    ptrScanSlots = &context->ptrScanSlots[scanSlotId];
-    ptrWdCfg = &context->ptrWdConfig[ptrScanSlots->wdId];
-
-    /* For the multi-channel mode, iterate through enabled channels and find the sensing channel that
-     * drives the sensor (not Shield only, Tx only, or Empty).
-     */
-    #if (1u < CY_CAPSENSE_TOTAL_CH_NUMBER)
-        for (tmpVal = 0u; tmpVal < CY_CAPSENSE_TOTAL_CH_NUMBER; tmpVal++)
-        {
-            ptrScanSlots = &context->ptrScanSlots[scanSlotId + (CY_CAPSENSE_SLOT_COUNT * tmpVal)];
-            if (CY_CAPSENSE_SLOT_SHIELD_ONLY > ptrScanSlots->wdId)
-            {
-                ptrWdCfg = &context->ptrWdConfig[ptrScanSlots->wdId];
-                break;
-            }
-        }
-    #endif
-
-    /* Initialize the .snsClkDivider field with the value for the slot that is
-    *  specified by the scanSlotId parameter of the function.
-    */
-    snsClkDivider = ptrWdCfg->ptrWdContext->snsClk;
-    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
-        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
-        {
-            #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_TOUCHPAD_EN) ||\
-                 (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_MATRIX_EN))
-                if (ptrWdCfg->numCols <= ptrScanSlots->snsId)
-                {
-                    snsClkDivider = ptrWdCfg->ptrWdContext->rowSnsClk;
-                }
-            #endif /* CY_CAPSENSE_CSD_TOUCHPAD_EN || CY_CAPSENSE_CSD_MATRIX_EN */
-                    }
-    #endif /* CY_CAPSENSE_CSD_EN */
-
-    /* Calculate the CONV_CYCLES number. */
-    tmpVal = ((uint32_t)context->ptrInternalContext->numFineInitCycles + ptrWdCfg->ptrWdContext->numSubConversions);
-    tmpVal *= snsClkDivider;
-
-    if (CY_CAPSENSE_CLK_SOURCE_PRS == (ptrWdCfg->ptrWdContext->snsClkSource & CY_CAPSENSE_CLK_SOURCE_MASK))
-    {
-        /* Taking into account correction that is implemented in the Cy_CapSense_AdjustSnsClkDivider() function,
-         * the scan duration is two time longer if the PRS is used as the sense clock source.
-         */
-        tmpVal <<= 1u;
-    }
-
-    /* Add the PRO_CYCLES number. */
-    tmpVal += ((uint32_t)context->ptrInternalContext->numProOffsetCycles + context->ptrInternalContext->numFineInitWaitCycles);
-
-    /* Add the EPI_CYCLES. The .numEpiCycles parameter is defined in terms of
-     * Mod Clock cycles for the fifth-generation devices.
-    */
-    tmpVal += (uint32_t)context->ptrInternalContext->numEpiCycles;
-
-    /* Calculate the SCAN_CYCLES number by multiplying the Mod Clock cycles number per one chop cycle by
-    *  number of chop cycles.
-    */
-    tmpVal *= ptrWdCfg->numChopCycles;
-
-    /* Add the INIT_CYCLES number. */
-    tmpVal += ((uint32_t)context->ptrInternalContext->numCoarseInitChargeCycles + context->ptrInternalContext->numCoarseInitSettleCycles);
-
-    /* Convert the calculated duration in terms of clk_mod cycles to the microseconds. */
-    tmpVal /= modClkFreqMhz;
-
-    /* Multiply the calculated value by the MARGIN_KOEFF value. */
-    tmpVal *= watchdogTimeMarginCoeff;
-
-    return tmpVal;
-}
-
-
-#if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CDAC_AUTO_DITHER_EN)
-/*******************************************************************************
-* Function Name: Cy_CapSense_ConfigureAutoDitherMode
-****************************************************************************//**
-*
-* Configures the MSC HW block for operation in the auto-dithering mode.
-*
-* \param context
-* The pointer to the context structure allocated by the user or middleware.
-*
-* \return
-* Returns the status of the operation:
-* - CY_CAPSENSE_STATUS_SUCCESS          - The operation is performed successfully.
-* - CY_CAPSENSE_STATUS_CONFIG_OVERFLOW  - The number of pin function exceeds the limit.
-* - CY_CAPSENSE_STATUS_BAD_CONFIG       - The function does not suppose to be
-*                                         called with the current CAPSENSE&trade;
-*                                         configuration.
-* - CY_CAPSENSE_STATUS_HW_BUSY          - The MSCLP HW block is busy and cannot be
-*                                         configured.
-*
-*******************************************************************************/
-static cy_capsense_status_t Cy_CapSense_ConfigureAutoDitherMode(
-                cy_stc_capsense_context_t * context)
-{
-    cy_capsense_status_t status = CY_CAPSENSE_STATUS_SUCCESS;
-    cy_en_msc_status_t mscStatus;
-    const cy_stc_capsense_common_config_t * ptrCommonCfg = context->ptrCommonConfig;
-    uint32_t curChIndex;
-    MSC_Type * ptrHwBase;
-
-    Cy_CapSense_SetModClkDivider(context->ptrInternalContext->modClk, context);
-    Cy_CapSense_SetIOsInDefaultState(context);
-    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_SHIELD_EN)
-        Cy_CapSense_SetShieldPinsInDefaultState(context);
-    #endif
-
-    /* Initializes all enabled MSC channels for scan */
-    for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-    {
-        context->ptrActiveScanSns[curChIndex].currentSenseMethod = CY_CAPSENSE_UNDEFINED_GROUP;
-
-        #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-            Cy_CapSense_SetCmodInAmuxModeState(curChIndex, context);
-        #else
-            Cy_CapSense_SetCmodInDefaultState(curChIndex, context);
-        #endif
-
-        ptrHwBase = ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase;
-
-        /* Generates base frame configurations for all enabled MSC channels */
-        status |= Cy_CapSense_GenerateBaseConfig(curChIndex, context);
-
-        if (CY_CAPSENSE_STATUS_SUCCESS != status)
-        {
-            break;
-        }
-
-        #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-            /* Generates sensor frame configuration */
-            Cy_CapSense_GenerateAllSensorConfig(curChIndex,
-                                            &context->ptrSensorFrameContext[(CY_CAPSENSE_SLOT_COUNT *
-                                            (curChIndex + context->ptrCommonConfig->channelOffset)) *
-                                            CY_MSC_6_SNS_REGS], context);
-        #endif
-
-        /* MSCv3 IP Block Base Register Configuration */
-        mscStatus = Cy_MSC_Configure(ptrHwBase,
-                                    &context->ptrBaseFrameContext[curChIndex],
-                                    CY_MSC_CAPSENSE_KEY,
-                                    ptrCommonCfg->ptrChConfig[curChIndex].ptrHwContext);
-
-        if (CY_MSC_SUCCESS != mscStatus)
-        {
-            status = CY_CAPSENSE_STATUS_HW_BUSY;
-            break;
-        }
-
-        #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CIC2_FILTER_EN)
-            /* Sets FILTER_MODE to CIC1 */
-            ptrHwBase->FILTER_CTL &= ~MSC_FILTER_CTL_FILTER_MODE_Msk;
-        #endif /* CY_CAPSENSE_CIC2_FILTER_EN */
-
-        /* Clears all pending interrupts of the current MSC HW block */
-        ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-        (void)ptrCommonCfg->ptrChConfig[curChIndex].ptrHwBase->INTR;
-
-        /* Disables all interrupts */
-        ptrHwBase->INTR_MASK = 0x00u;
-        (void)ptrHwBase->INTR_MASK;
-
-        /* Enables HW IP to allow a scan frame start */
-        ptrHwBase->CTL |= MSC_CTL_ENABLED_Msk;
-
-        ptrHwBase->CTL &= ~MSC_CTL_OPERATING_MODE_Msk;
-    }
-
-    return status;
-}
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_CdacDitherScaleCalc
-****************************************************************************//**
-*
-* This internal function calculates the dither scale value based on highest
-* raw count value in AUTO dithering mode.
-*
-* \param context
-* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
-*
-* \return status
-* Returns the status of the operation (different statuses can be combined):
-* - CY_CAPSENSE_STATUS_SUCCESS          - The operation is performed
-*                                         successfully.
-* - CY_CAPSENSE_STATUS_BAD_PARAM        - At least one of input parameters is
-*                                         not valid.
-* - CY_CAPSENSE_STATUS_HW_BUSY          - The HW is busy with the previous scan.
-*
-*******************************************************************************/
-static cy_capsense_status_t Cy_CapSense_CdacDitherScaleCalc(
-                cy_stc_capsense_context_t * context)
-{
-    cy_capsense_status_t status = CY_CAPSENSE_STATUS_SUCCESS;
-    const cy_stc_capsense_widget_config_t * ptrWdCfg;
-    cy_stc_capsense_sensor_context_t * ptrSnsCxt;
-    uint32_t watchdog;
-    uint32_t wdIndex;
-    uint32_t slotId;
-    uint32_t rawCountMax;
-    uint32_t curChIndex;
-    uint32_t slotValue;
-    uint32_t scanSlotIndexValid;
-    uint32_t scanFlag;
-    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-        uint32_t snsIndex;
-    #endif
-    uint32_t slotIndex;
-    MSC_Type * ptrHwBase;
-    const cy_stc_capsense_scan_slot_t * ptrScanSlots;
-
-    /* Forces HW configuration update on the next scan */
-    status = Cy_CapSense_SwitchHwConfiguration(CY_CAPSENSE_HW_CONFIG_AUTO_DITHERING, context);
-
-    /* Performs scans for active slots */
-    for (slotId = 0u; slotId < CY_CAPSENSE_SLOT_COUNT; slotId++)
-    {
-        scanFlag = 0u;
-
-        for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-        {
-            context->ptrActiveScanSns[curChIndex].currentChannelSlotIndex = (uint16_t)slotId;
-            slotIndex = slotId + (curChIndex * CY_CAPSENSE_SLOT_COUNT);
-            ptrScanSlots = &context->ptrScanSlots[slotIndex];
-            slotValue = ptrScanSlots->wdId;
-            scanSlotIndexValid = slotIndex;
-
-            if (CY_CAPSENSE_SLOT_EMPTY == slotValue)
-            {
-                #if (CY_CAPSENSE_TOTAL_CH_NUMBER > 1u)
-                    if (slotIndex < CY_CAPSENSE_SLOT_COUNT)
-                    {
-                        scanSlotIndexValid += CY_CAPSENSE_SLOT_COUNT;
-                    }
-                    else
-                    {
-                        scanSlotIndexValid -= CY_CAPSENSE_SLOT_COUNT;
-                    }
-                #endif
-            }
-            else if (CY_CAPSENSE_SLOT_SHIELD_ONLY <= slotValue)
-            {
-                scanSlotIndexValid = ((uint32_t)ptrScanSlots->snsId * CY_CAPSENSE_SLOT_COUNT) + slotId;
-            }
-            else
-            {
-                /* Do nothing */
-            }
-
-            /* Initializes for each channel the active sensor structure for the current sensor */
-            wdIndex = context->ptrScanSlots[scanSlotIndexValid].wdId;
-            ptrWdCfg = &context->ptrWdConfig[wdIndex];
-
-            #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-                snsIndex = context->ptrScanSlots[scanSlotIndexValid].snsId;
-                (void)Cy_CapSense_ConfigureAnalogMuxResource(curChIndex, context->ptrWdConfig[wdIndex].senseMethod, context);
-                Cy_CapSense_InitActivePtr(curChIndex, wdIndex, snsIndex, context);
-
-                if ((slotValue != CY_CAPSENSE_SLOT_EMPTY) &&
-                    (slotValue != CY_CAPSENSE_SLOT_SHIELD_ONLY))
-                    {
-                        /* Connects the widget first sensor electrodes */
-                        Cy_CapSense_ConnectSensor(curChIndex, context);
-                    }
-            #endif
-
-            if (CY_CAPSENSE_CDAC_DITHERING_MODE_AUTO == ptrWdCfg->cdacDitherScaleMode)
-            {
-                /* Handles only CSD and CSX widgets */
-                if (CY_CAPSENSE_ISX_GROUP != ptrWdCfg->senseMethod)
-                {
-                    /* Sets a flag to perform scan */
-                    scanFlag = 1u;
-                }
-            }
-        }
-
-        if (0u != scanFlag)
-        {
-            for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-            {
-                ptrHwBase = context->ptrCommonConfig->ptrChConfig[curChIndex].ptrHwBase;
-                ptrHwBase->FRAME_CMD = MSC_FRAME_CMD_START_FRAME_Msk;
-            }
-            
-            for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-            {
-                ptrHwBase = context->ptrCommonConfig->ptrChConfig[curChIndex].ptrHwBase;
-                slotIndex = slotId + (curChIndex * CY_CAPSENSE_SLOT_COUNT);
-                status = Cy_CapSense_CdacDitherConfigScan(ptrHwBase, curChIndex, ((curChIndex * CY_CAPSENSE_SLOT_COUNT) + slotId), slotIndex * CY_MSC_6_SNS_REGS, context);
-            }
-            watchdog = CY_CAPSENSE_CDAC_DITHERING_MOD_CLK_PERIODS;
-            ptrHwBase = context->ptrCommonConfig->ptrChConfig[0u].ptrHwBase;
-
-            /* Waits end of scan */
-            while ((ptrHwBase->INTR & MSC_INTR_MASK_SCAN_Msk) == 0u)
-            {
-                if (0uL == watchdog)
-                {
-                    break;
-                }
-                watchdog--;
-            }
-
-            if (0u == watchdog)
-            {
-                status |= CY_CAPSENSE_STATUS_TIMEOUT;
-            }
-            else
-            {
-                for (curChIndex = 0u; curChIndex < CY_CAPSENSE_TOTAL_CH_NUMBER; curChIndex++)
-                {
-                    ptrHwBase = context->ptrCommonConfig->ptrChConfig[curChIndex].ptrHwBase;
-                    ptrScanSlots = &context->ptrScanSlots[slotId + (CY_CAPSENSE_SLOT_COUNT * curChIndex)];
-
-                    if (CY_CAPSENSE_SLOT_SHIELD_ONLY > ptrScanSlots->wdId)
-                    {
-                        ptrWdCfg = &context->ptrWdConfig[context->ptrScanSlots[slotId + (curChIndex * CY_CAPSENSE_SLOT_COUNT)].wdId];
-
-                        if (CY_CAPSENSE_CDAC_DITHERING_MODE_AUTO == ptrWdCfg->cdacDitherScaleMode)
-                        {
-                            /* Handles only CSD and CSX widgets */
-                            if (CY_CAPSENSE_ISX_GROUP != ptrWdCfg->senseMethod)
-                            {
-                                ptrSnsCxt = &ptrWdCfg->ptrSnsContext[context->ptrScanSlots[slotId + (curChIndex * CY_CAPSENSE_SLOT_COUNT)].snsId];
-
-                                /* Reads raw counts */
-                                ptrSnsCxt->raw = (uint16_t)(ptrHwBase->RESULT_FIFO_RD & MSC_RESULT_FIFO_RD_RAW_COUNT_Msk);
-                            }
-                        }
-                    }
-                    /* Clears all pending interrupts */
-                    ptrHwBase->INTR = CY_CAPSENSE_MSC_INTR_ALL_MSK;
-                    (void)ptrHwBase->INTR;
-
-                    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD)
-                        if (CY_CAPSENSE_SNS_CONNECTED == context->ptrActiveScanSns[curChIndex].connectedSnsState)
-                        {
-                            /* Disconnects the scanned sensor */
-                            Cy_CapSense_DisconnectSensor(curChIndex, context);
-                        }
-                    #endif
-                }
-            }
-        }
-    }
-
-    if (status == CY_CAPSENSE_STATUS_SUCCESS)
-    {
-        for (wdIndex = 0u; wdIndex < CY_CAPSENSE_TOTAL_WIDGET_COUNT; wdIndex++)
-        {
-            ptrWdCfg = &context->ptrWdConfig[wdIndex];
-            if (CY_CAPSENSE_CDAC_DITHERING_MODE_AUTO == ptrWdCfg->cdacDitherScaleMode)
-            {
-                rawCountMax = 0u;
-                ptrSnsCxt = ptrWdCfg->ptrSnsContext;
-
-                for (slotId = 0u; slotId < ptrWdCfg->numSns; slotId++)
-                {
-                    /* Finds the biggest raw count value in widget */
-                    if (ptrSnsCxt->raw > rawCountMax)
-                    {
-                        rawCountMax = ptrSnsCxt->raw;
-                    }
-                    ptrSnsCxt++;
-                }
-
-                #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSX_EN)
-                    /* Divides the result by 2 for the FW CSX scanning method */
-                    if (CY_CAPSENSE_CSX_GROUP == ptrWdCfg->senseMethod)
-                    {
-                        rawCountMax >>= 1u;
-                    }
-                #endif
-
-                /* Sets dither value according to measured widget raw counts */
-                if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_300_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 6u;
-                } else if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_500_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 5u;
-                } else if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_1000_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 4u;
-                } else if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_3000_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 3u;
-                } else if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_5000_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 2u;
-                } else if (rawCountMax < CY_CAPSENSE_DITHERING_SNS_CAP_10000_FEMTO_RAW)
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 1u;
-                } else
-                {
-                    ptrWdCfg->ptrWdContext->cdacDitherValue = 0u;
-                }
-            }
-        }
-    }
-
-    return status;
-}
-
-
-/*******************************************************************************
-* Function Name: Cy_CapSense_CdacDitherConfigScan
-****************************************************************************//**
-*
-* This internal function configures and performs scanning for a slot.
-*
-* \param ptrHwBase
-* The pointer to HW base pointer for current channel.
-*
-* \param chId
-* Specifies the ID number of the channel
-*
-* \param slotId
-* Specifies the ID number of the slot.
-*
-* \param snsFrameIdx
-* The index of sensor frame context structure.
-*
-* \param context
-* The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
-*
-* \return status
-* Returns the status of the operation (different statuses can be combined):
-* - CY_CAPSENSE_STATUS_SUCCESS       - The operation is performed
-*                                      successfully.
-* - CY_CAPSENSE_STATUS_TIMEOUT       - The software watchdog timeout occurred
-*                                      during the scan, the scan was not completed.
-*
-*******************************************************************************/
-static cy_capsense_status_t Cy_CapSense_CdacDitherConfigScan(
-                MSC_Type * ptrHwBase,
-                uint32_t chId,
-                uint32_t slotId,
-                uint32_t snsFrameIdx,
-                cy_stc_capsense_context_t * context)
-{
-    cy_capsense_status_t status = CY_CAPSENSE_STATUS_SUCCESS;
-
-    uint32_t scanConfigTmp[CY_MSC_6_SNS_REGS] = {0u, 0u, 0u, 0u, 0u, 0u};
-    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-        (void)snsFrameIdx;
-        uint32_t index;
-    #endif
-
-    #if (CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_CTRLMUX_SENSOR_CONNECTION_METHOD)
-        /* Inherits sensor frame to local array */
-        for (index = 0; index < CY_MSC_6_SNS_REGS; index++)
-        {
-            scanConfigTmp[index] = context->ptrSensorFrameContext[snsFrameIdx + index];
-        }
-    #else /* CY_CAPSENSE_SENSOR_CONNECTION_MODE == CY_CAPSENSE_AMUX_SENSOR_CONNECTION_METHOD */
-        /* Getting the sensor frame configuration */
-        (void)Cy_CapSense_GenerateSensorConfig(chId, slotId, &scanConfigTmp[0u], context);
-    #endif
-
-    /* Configures Sensor Clock, Clock Sources, set the multi-channel mode configuration to OFF */
-    scanConfigTmp[CY_CAPSENSE_SNS_CTL_INDEX] &= (uint32_t)~(MSC_SNS_CTL_START_SCAN_Msk | MSC_SNS_CTL_MULTI_CH_MODE_Msk |
-                                                            MSC_SNS_CTL_SENSE_DIV_Msk | MSC_SNS_CTL_LFSR_MODE_Msk);
-    scanConfigTmp[CY_CAPSENSE_SNS_CTL_INDEX] |= (((CY_CAPSENSE_CDAC_DITHERING_KREF - 1u) << MSC_SNS_CTL_SENSE_DIV_Pos) |
-                                                 MSC_SNS_CTL_LAST_Msk | MSC_SNS_CTL_VALID_Msk | MSC_SNS_CTL_START_SCAN_Msk);
-
-    if (1u < CY_CAPSENSE_TOTAL_CH_NUMBER)
-    {
-        scanConfigTmp[CY_CAPSENSE_SNS_CTL_INDEX] |= (CY_CAPSENSE_SYNC_INTERNAL << MSC_SNS_CTL_MULTI_CH_MODE_Pos);
-    }
-
-    /* Disables chopping. Configures Number of sub-conversions, Compensation divider */
-    scanConfigTmp[CY_CAPSENSE_SNS_SCAN_CTL_INDEX] &= (uint32_t)~(MSC_SNS_SCAN_CTL_NUM_CONV_Msk |
-                                                                 MSC_SNS_SCAN_CTL_NUM_SUB_CONVS_Msk |
-                                                                 MSC_SNS_SCAN_CTL_COMP_DIV_Msk);
-    scanConfigTmp[CY_CAPSENSE_SNS_SCAN_CTL_INDEX] |= (((CY_CAPSENSE_CDAC_DITHERING_NUM_SUBCONV - 1u) << MSC_SNS_SCAN_CTL_NUM_SUB_CONVS_Pos) |
-                                                     ((CY_CAPSENSE_CDAC_DITHERING_COMP_DIV - 1u) << MSC_SNS_SCAN_CTL_COMP_DIV_Pos));
-
-    /* Configures Cap DACs and Clock reference rate*/
-    scanConfigTmp[CY_CAPSENSE_SNS_CDAC_CTL_INDEX] = 0u;
-    scanConfigTmp[CY_CAPSENSE_SNS_CDAC_CTL_INDEX] |= ((CY_CAPSENSE_CDAC_DITHERING_CDAC_REF << MSC_SNS_CDAC_CTL_SEL_RE_Pos) |
-                                                     (CY_CAPSENSE_CDAC_DITHERING_CLOCK_REF_RATE << MSC_SNS_CDAC_CTL_CLOCK_REF_RATE_Pos));
-
-    /* Initiates the scan in the CPU operating mode */
-    Cy_MSC_ConfigureScan(ptrHwBase, CY_MSC_6_SNS_REGS, &scanConfigTmp[0u]);
-
-    return status;
-}
-#endif /* CY_CAPSENSE_CDAC_AUTO_DITHER_EN */
 
 
 #endif /* CY_IP_M0S8MSCV3 */

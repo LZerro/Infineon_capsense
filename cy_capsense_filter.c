@@ -1,13 +1,13 @@
 /***************************************************************************//**
 * \file cy_capsense_filter.c
-* \version 5.0
+* \version 3.0
 *
 * \brief
 * This file contains the source code of all filters implementation.
 *
 ********************************************************************************
 * \copyright
-* Copyright 2018-2024, Cypress Semiconductor Corporation (an Infineon company)
+* Copyright 2018-2021, Cypress Semiconductor Corporation (an Infineon company)
 * or an affiliate of Cypress Semiconductor Corporation. All rights reserved.
 * You may use this file only in accordance with the license, terms, conditions,
 * disclaimers, and limitations in the end user license agreement accompanying
@@ -21,7 +21,7 @@
 #include "cy_capsense_common.h"
 #include "cy_capsense_lib.h"
 
-#if (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3) || defined(CY_IP_M0S8MSCV3LP))
+#if (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3))
 
 
 /*******************************************************************************
@@ -72,9 +72,6 @@ static cy_capsense_status_t Cy_CapSense_CheckBaselineInv(
 * function if any of the above functions is already used. This function can be
 * used for custom application implementation.
 *
-* \note For the fifth-generation low power CAPSENSE&trade; widgets
-* of the \ref CY_CAPSENSE_WD_LOW_POWER_E type are not processed.
-*
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
 *
@@ -90,17 +87,12 @@ cy_capsense_status_t Cy_CapSense_UpdateAllBaselines(
     uint32_t wdIndex;
     cy_capsense_status_t bslnStatus = CY_CAPSENSE_STATUS_SUCCESS;
 
-    for (wdIndex = CY_CAPSENSE_TOTAL_WIDGET_COUNT; wdIndex-- > 0u;)
+    for(wdIndex = context->ptrCommonConfig->numWd; wdIndex-- > 0u;)
     {
-    #if (CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP)
-        if ((uint8_t)CY_CAPSENSE_WD_LOW_POWER_E != context->ptrWdConfig[wdIndex].wdType)
-    #endif /* CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP */
-        {
-            bslnStatus |= Cy_CapSense_UpdateWidgetBaseline(wdIndex, context);
-        }
+        bslnStatus |= Cy_CapSense_UpdateWidgetBaseline(wdIndex, context);
     }
 
-    return bslnStatus;
+    return(bslnStatus);
 }
 
 
@@ -124,18 +116,12 @@ cy_capsense_status_t Cy_CapSense_UpdateAllBaselines(
 * Specifies the ID number of the widget. A macro for the widget ID can be found
 * in the cycfg_capsense.h file defined as CY_CAPSENSE_<WIDGET_NAME>_WDGT_ID.
 *
-* \note For the fifth-generation low power CAPSENSE&trade; widgets
-* of the \ref CY_CAPSENSE_WD_LOW_POWER_E type are not processed and
-* \ref CY_CAPSENSE_STATUS_BAD_PARAM is returned
-* if a widget of this type is passed.
-*
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
 *
 * \return
 * Returns the status of the specified widget update baseline operation:
 * - CY_CAPSENSE_STATUS_SUCCESS - The operation is successfully completed.
-* - CY_CAPSENSE_STATUS_BAD_PARAM - The input parameter is invalid.
 * - CY_CAPSENSE_STATUS_BAD_DATA - The baseline processing failed.
 *
 *******************************************************************************/
@@ -144,21 +130,14 @@ cy_capsense_status_t Cy_CapSense_UpdateWidgetBaseline(
                 const cy_stc_capsense_context_t * context)
 {
     uint32_t snsIndex;
-    cy_capsense_status_t bslnStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
+    cy_capsense_status_t bslnStatus = CY_CAPSENSE_STATUS_SUCCESS;
 
-#if (CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP)
-    if ((uint8_t)CY_CAPSENSE_WD_LOW_POWER_E != context->ptrWdConfig[widgetId].wdType)
-#endif /* CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP */
+    for(snsIndex = context->ptrWdConfig[widgetId].numSns; snsIndex-- > 0u;)
     {
-        bslnStatus = CY_CAPSENSE_STATUS_SUCCESS;
-
-        for (snsIndex = context->ptrWdConfig[widgetId].numSns; snsIndex-- > 0u;)
-        {
-            bslnStatus |= Cy_CapSense_UpdateSensorBaseline(widgetId, snsIndex, context);
-        }
+        bslnStatus |= Cy_CapSense_UpdateSensorBaseline(widgetId, snsIndex, context);
     }
 
-    return bslnStatus;
+    return(bslnStatus);
 }
 
 
@@ -183,9 +162,6 @@ cy_capsense_status_t Cy_CapSense_UpdateWidgetBaseline(
 * Specifies the ID number of the widget. A macro for the widget ID can be found
 * in the cycfg_capsense.h file defined as CY_CAPSENSE_<WIDGET_NAME>_WDGT_ID.
 *
-* \note For the fifth-generation low power CAPSENSE&trade; it is not recommended
-* to call this function for widgets of the \ref CY_CAPSENSE_WD_LOW_POWER_E type.
-*
 * \param sensorId
 * Specifies the ID number of the sensor within the widget. A macro for the
 * sensor ID within a specified widget can be found in the cycfg_capsense.h
@@ -197,7 +173,6 @@ cy_capsense_status_t Cy_CapSense_UpdateWidgetBaseline(
 * \return
 * Returns the status of the specified sensor update baseline operation:
 * - CY_CAPSENSE_STATUS_SUCCESS - The operation is successfully completed.
-* - CY_CAPSENSE_STATUS_BAD_PARAM - The input parameter is invalid.
 * - CY_CAPSENSE_STATUS_BAD_DATA - The baseline processing failed.
 *
 *******************************************************************************/
@@ -206,13 +181,13 @@ cy_capsense_status_t Cy_CapSense_UpdateSensorBaseline(
                 uint32_t sensorId,
                 const cy_stc_capsense_context_t * context)
 {
-    cy_capsense_status_t bslnStatus = CY_CAPSENSE_STATUS_BAD_PARAM;
+    uint32_t result;
     const cy_stc_capsense_widget_config_t * ptrWdCfg = &context->ptrWdConfig[widgetId];
     cy_stc_capsense_sensor_context_t * ptrSnsCxt = &ptrWdCfg->ptrSnsContext[sensorId];
 
-    bslnStatus = Cy_CapSense_FtUpdateBaseline(ptrWdCfg->ptrWdContext, ptrSnsCxt, &ptrWdCfg->ptrBslnInv[sensorId], context);
+    result = Cy_CapSense_FtUpdateBaseline(ptrWdCfg->ptrWdContext, ptrSnsCxt, &ptrWdCfg->ptrBslnInv[sensorId], context);
 
-    return bslnStatus;
+    return (result);
 }
 
 
@@ -270,10 +245,10 @@ static cy_capsense_status_t Cy_CapSense_CheckBaselineInv(
             context->ptrBistContext->testResultMask |= CY_CAPSENSE_BIST_BSLN_INTEGRITY_MASK;
         }
     #else
-        (void)ptrWdContext;
-        (void)ptrSnsContext;
-        (void)ptrSnsBslnInv;
-        (void)context;
+        (void) ptrWdContext;
+        (void) ptrSnsContext;
+        (void) ptrSnsBslnInv;
+        (void) context;
     #endif /* ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_BIST_EN) &&\
                (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_BSLN_INTEGRITY_EN)) */
 
@@ -332,7 +307,7 @@ cy_capsense_status_t Cy_CapSense_FtUpdateBaseline(
     if (CY_CAPSENSE_STATUS_SUCCESS == result)
     {
         /* Reset negative baseline counter */
-        if (ptrSnsContext->raw >= ptrSnsContext->bsln)
+        if(ptrSnsContext->raw >= ptrSnsContext->bsln)
         {
             ptrSnsContext->negBslnRstCnt = 0u;
         }
@@ -408,7 +383,7 @@ void Cy_CapSense_InitializeAllBaselines(cy_stc_capsense_context_t * context)
 {
     uint32_t wdIndex;
 
-    for (wdIndex = CY_CAPSENSE_TOTAL_WIDGET_COUNT; wdIndex-- > 0u;)
+    for(wdIndex = context->ptrCommonConfig->numWd; wdIndex-- > 0u;)
     {
         Cy_CapSense_InitializeWidgetBaseline(wdIndex, context);
     }
@@ -439,9 +414,6 @@ void Cy_CapSense_InitializeAllBaselines(cy_stc_capsense_context_t * context)
 * Specifies the ID number of the widget. A macro for the widget ID can be found
 * in the cycfg_capsense.h file defined as CY_CAPSENSE_<WIDGET_NAME>_WDGT_ID.
 *
-* \note For the fifth-generation low power CAPSENSE&trade; widgets
-* of the \ref CY_CAPSENSE_WD_LOW_POWER_E type are not processed.
-*
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
 *
@@ -452,14 +424,9 @@ void Cy_CapSense_InitializeWidgetBaseline(
 {
     uint32_t snsIndex;
 
-#if (CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP)
-    if ((uint8_t)CY_CAPSENSE_WD_LOW_POWER_E != context->ptrWdConfig[widgetId].wdType)
-#endif /* CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP */
+    for(snsIndex = context->ptrWdConfig[widgetId].numSns; snsIndex-- > 0u;)
     {
-        for (snsIndex = context->ptrWdConfig[widgetId].numSns; snsIndex-- > 0u;)
-        {
-            Cy_CapSense_InitializeSensorBaseline(widgetId, snsIndex, context);
-        }
+        Cy_CapSense_InitializeSensorBaseline(widgetId, snsIndex, context);
     }
 }
 
@@ -474,9 +441,6 @@ void Cy_CapSense_InitializeWidgetBaseline(
 * \param widgetId
 * Specifies the ID number of the widget. A macro for the widget ID can be found
 * in the cycfg_capsense.h file defined as CY_CAPSENSE_<WIDGET_NAME>_WDGT_ID.
-*
-* \note For the fifth-generation low power CAPSENSE&trade; it is not recommended
-* to call this function for widgets of the \ref CY_CAPSENSE_WD_LOW_POWER_E type.
 *
 * \param sensorId
 * Specifies the ID number of the sensor within the widget. A macro for the
@@ -494,20 +458,19 @@ void Cy_CapSense_InitializeSensorBaseline(
 {
     uint32_t cxtOffset;
     uint32_t freqChIndex;
-    const cy_stc_capsense_widget_config_t * ptrWdCfg = &context->ptrWdConfig[widgetId];
-
-    for (freqChIndex = 0u; freqChIndex < CY_CAPSENSE_CONFIGURED_FREQ_NUM; freqChIndex++)
+    for(freqChIndex = 0u; freqChIndex < CY_CAPSENSE_CONFIGURED_FREQ_NUM; freqChIndex++)
     {
         #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_MULTI_FREQUENCY_SCAN_EN)
             cxtOffset = sensorId + (freqChIndex * context->ptrCommonConfig->numSns);
         #else
             cxtOffset = sensorId;
         #endif
-        Cy_CapSense_FtInitializeBaseline(&ptrWdCfg->ptrSnsContext[cxtOffset]);
+        Cy_CapSense_FtInitializeBaseline(&context->ptrWdConfig[widgetId].ptrSnsContext[cxtOffset]);
         /* If BIST enabled, create a baseline inverse duplication */
         #if ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_BIST_EN) &&\
-             (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_BSLN_INTEGRITY_EN))
-            ptrWdCfg->ptrBslnInv[cxtOffset] = ~ptrWdCfg->ptrSnsContext[cxtOffset].bsln;
+                (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_BSLN_INTEGRITY_EN))
+            context->ptrWdConfig[widgetId].ptrBslnInv[cxtOffset] =
+                                            ~context->ptrWdConfig[widgetId].ptrSnsContext[cxtOffset].bsln;
         #endif /* ((CY_CAPSENSE_ENABLE == CY_CAPSENSE_BIST_EN) &&\
                     (CY_CAPSENSE_ENABLE == CY_CAPSENSE_TST_BSLN_INTEGRITY_EN)) */
     }
@@ -552,7 +515,7 @@ void Cy_CapSense_InitializeAllFilters(const cy_stc_capsense_context_t * context)
 {
     uint32_t widgetId;
 
-    for (widgetId = CY_CAPSENSE_TOTAL_WIDGET_COUNT; widgetId-- > 0u;)
+    for(widgetId = context->ptrCommonConfig->numWd; widgetId-- > 0u;)
     {
         Cy_CapSense_InitializeWidgetFilter(widgetId, context);
     }
@@ -573,9 +536,6 @@ void Cy_CapSense_InitializeAllFilters(const cy_stc_capsense_context_t * context)
 * \param widgetId
 * Specifies the ID number of the widget. A macro for the widget ID can be found
 * in the cycfg_capsense.h file defined as CY_CAPSENSE_<WIDGET_NAME>_WDGT_ID.
-*
-* \note For the fifth-generation low power CAPSENSE&trade; widgets
-* of the \ref CY_CAPSENSE_WD_LOW_POWER_E type are not processed.
 *
 * \param context
 * The pointer to the CAPSENSE&trade; context structure \ref cy_stc_capsense_context_t.
@@ -602,67 +562,62 @@ void Cy_CapSense_InitializeWidgetFilter(
         uint8_t * ptrHistoryLow = NULL;
     #endif
 
-#if (CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP)
-    if ((uint8_t)CY_CAPSENSE_WD_LOW_POWER_E != ptrWdCfg->wdType)
-#endif /* CY_CAPSENSE_PLATFORM_BLOCK_FIFTH_GEN_LP */
+    snsHistorySize = (uint32_t)ptrWdCfg->rawFilterConfig & CY_CAPSENSE_RC_FILTER_SNS_HISTORY_SIZE_MASK;
+    for(freqChIndex = 0u; freqChIndex < CY_CAPSENSE_CONFIGURED_FREQ_NUM; freqChIndex++)
     {
-        snsHistorySize = (uint32_t)ptrWdCfg->rawFilterConfig & CY_CAPSENSE_RC_FILTER_SNS_HISTORY_SIZE_MASK;
-        for (freqChIndex = 0u; freqChIndex < CY_CAPSENSE_CONFIGURED_FREQ_NUM; freqChIndex++)
+        for(snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
         {
-            for (snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
+            ptrSnsCtx = &ptrWdCfg->ptrSnsContext[snsIndex + (freqChIndex * context->ptrCommonConfig->numSns)];
+            historyOffset = (freqChIndex * (CY_CAPSENSE_RAW_HISTORY_SIZE / CY_CAPSENSE_CONFIGURED_FREQ_NUM)) + (snsHistorySize * snsIndex);
+            ptrHistory = &ptrWdCfg->ptrRawFilterHistory[historyOffset];
+
+            #if (CY_CAPSENSE_REGULAR_RC_MEDIAN_FILTER_EN || CY_CAPSENSE_PROX_RC_MEDIAN_FILTER_EN)
+                if(0u != (CY_CAPSENSE_RC_FILTER_MEDIAN_EN_MASK & rawFilterCfg))
+                {
+                    Cy_CapSense_InitializeMedianInternal(ptrWdCfg, ptrSnsCtx, ptrHistory);
+                    ptrHistory += CY_CAPSENSE_RC_MEDIAN_SIZE;
+                }
+            #endif
+
+            #if (CY_CAPSENSE_REGULAR_RC_IIR_FILTER_EN || CY_CAPSENSE_PROX_RC_IIR_FILTER_EN)
+            if(0u != (CY_CAPSENSE_RC_FILTER_IIR_EN_MASK & rawFilterCfg))
             {
-                ptrSnsCtx = &ptrWdCfg->ptrSnsContext[snsIndex + (freqChIndex * context->ptrCommonConfig->numSns)];
-                historyOffset = (freqChIndex * (CY_CAPSENSE_RAW_HISTORY_SIZE / CY_CAPSENSE_CONFIGURED_FREQ_NUM)) + (snsHistorySize * snsIndex);
-                ptrHistory = &ptrWdCfg->ptrRawFilterHistory[historyOffset];
-
-                #if (CY_CAPSENSE_REGULAR_RC_MEDIAN_FILTER_EN || CY_CAPSENSE_PROX_RC_MEDIAN_FILTER_EN)
-                    if (0u != (CY_CAPSENSE_RC_FILTER_MEDIAN_EN_MASK & rawFilterCfg))
-                    {
-                        Cy_CapSense_InitializeMedianInternal(ptrWdCfg, ptrSnsCtx, ptrHistory);
-                        ptrHistory += CY_CAPSENSE_RC_MEDIAN_SIZE;
-                    }
-                #endif
-
-                #if (CY_CAPSENSE_REGULAR_RC_IIR_FILTER_EN || CY_CAPSENSE_PROX_RC_IIR_FILTER_EN)
-                if (0u != (CY_CAPSENSE_RC_FILTER_IIR_EN_MASK & rawFilterCfg))
+                if(CY_CAPSENSE_IIR_FILTER_PERFORMANCE == (ptrWdCfg->rawFilterConfig & CY_CAPSENSE_RC_FILTER_IIR_MODE_MASK))
                 {
-                    if (CY_CAPSENSE_IIR_FILTER_PERFORMANCE == (ptrWdCfg->rawFilterConfig & CY_CAPSENSE_RC_FILTER_IIR_MODE_MASK))
-                    {
-                        ptrHistoryLow = &ptrWdCfg->ptrRawFilterHistoryLow[snsIndex +
-                                (freqChIndex * (CY_CAPSENSE_IIR_HISTORY_LOW_SIZE / CY_CAPSENSE_CONFIGURED_FREQ_NUM))];
-                    }
-                    Cy_CapSense_InitializeIIRInternal(ptrWdCfg, ptrSnsCtx, ptrHistory, ptrHistoryLow);
-                    ptrHistory += CY_CAPSENSE_RC_IIR_SIZE;
+                    ptrHistoryLow = &ptrWdCfg->ptrRawFilterHistoryLow[snsIndex +
+                            (freqChIndex * (CY_CAPSENSE_IIR_HISTORY_LOW_SIZE / CY_CAPSENSE_CONFIGURED_FREQ_NUM))];
                 }
-                #endif
+                Cy_CapSense_InitializeIIRInternal(ptrWdCfg, ptrSnsCtx, ptrHistory, ptrHistoryLow);
+                ptrHistory += CY_CAPSENSE_RC_IIR_SIZE;
+            }
+            #endif
 
-                #if (CY_CAPSENSE_REGULAR_RC_AVERAGE_FILTER_EN || CY_CAPSENSE_PROX_RC_AVERAGE_FILTER_EN)
-                if (0u != (CY_CAPSENSE_RC_FILTER_AVERAGE_EN_MASK & rawFilterCfg))
-                {
-                    Cy_CapSense_InitializeAverageInternal(ptrWdCfg, ptrSnsCtx, ptrHistory);
-                }
-                #endif
+            #if (CY_CAPSENSE_REGULAR_RC_AVERAGE_FILTER_EN || CY_CAPSENSE_PROX_RC_AVERAGE_FILTER_EN)
+            if(0u != (CY_CAPSENSE_RC_FILTER_AVERAGE_EN_MASK & rawFilterCfg))
+            {
+                Cy_CapSense_InitializeAverageInternal(ptrWdCfg, ptrSnsCtx, ptrHistory);
+            }
+            #endif
+        }
+    }
+
+    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_SMARTSENSE_FULL_EN)
+    #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
+        /* Noise envelope is available for CSD widgets only */
+        if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
+        {
+            ptrSnsCtx = ptrWdCfg->ptrSnsContext;
+            ptrNEHistory = ptrWdCfg->ptrNoiseEnvelope;
+            for(snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
+            {
+                Cy_CapSense_InitializeNoiseEnvelope_Lib(ptrSnsCtx->raw,
+                        ptrWdCfg->ptrWdContext->sigPFC, ptrNEHistory);
+                ptrSnsCtx++;
+                ptrNEHistory++;
             }
         }
-
-        #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_SMARTSENSE_FULL_EN)
-        #if (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN)
-            /* Noise envelope is available for CSD widgets only */
-            if (CY_CAPSENSE_CSD_GROUP == ptrWdCfg->senseMethod)
-            {
-                ptrSnsCtx = ptrWdCfg->ptrSnsContext;
-                ptrNEHistory = ptrWdCfg->ptrNoiseEnvelope;
-                for (snsIndex = 0u; snsIndex < ptrWdCfg->numSns; snsIndex++)
-                {
-                    Cy_CapSense_InitializeNoiseEnvelope_Lib(ptrSnsCtx->raw,
-                            ptrWdCfg->ptrWdContext->sigPFC, ptrNEHistory);
-                    ptrSnsCtx++;
-                    ptrNEHistory++;
-                }
-            }
-        #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN) */
-        #endif
-    }
+    #endif /* (CY_CAPSENSE_ENABLE == CY_CAPSENSE_CSD_EN) */
+    #endif
 }
 #endif /*(CY_CAPSENSE_DISABLE != CY_CAPSENSE_RAWCOUNT_FILTER_EN)*/
 
@@ -730,7 +685,7 @@ void Cy_CapSense_RunIIRInternal(
     uint32_t tempHistory;
     uint32_t tempRaw;
 
-    if (CY_CAPSENSE_IIR_FILTER_PERFORMANCE == (ptrWdConfig->rawFilterConfig & CY_CAPSENSE_RC_FILTER_IIR_MODE_MASK))
+    if(CY_CAPSENSE_IIR_FILTER_PERFORMANCE == (ptrWdConfig->rawFilterConfig & CY_CAPSENSE_RC_FILTER_IIR_MODE_MASK))
     {
         tempRaw = ((uint32_t)ptrSnsContext->raw) << CY_CAPSENSE_IIR_SHIFT_PERFORMANCE;
         tempHistory  = ((uint32_t)(*ptrSnsRawHistory)) << CY_CAPSENSE_IIR_SHIFT_PERFORMANCE;
@@ -864,7 +819,7 @@ void Cy_CapSense_RunAverageInternal(
 {
     uint32_t temp;
 
-    if (CY_CAPSENSE_AVERAGE_FILTER_LEN_4 == (ptrWdConfig->rawFilterConfig & CY_CAPSENSE_RC_FILTER_AVERAGE_MODE_MASK))
+    if(CY_CAPSENSE_AVERAGE_FILTER_LEN_4 == (ptrWdConfig->rawFilterConfig & CY_CAPSENSE_RC_FILTER_AVERAGE_MODE_MASK))
     {
         temp = ((uint32_t)ptrSnsContext->raw + ptrSnsRawHistory[0u] + ptrSnsRawHistory[1u] + ptrSnsRawHistory[2u]) >> 2u;
         ptrSnsRawHistory[2u] = ptrSnsRawHistory[1u];
@@ -910,7 +865,7 @@ void Cy_CapSense_FtRunEnabledFiltersInternal(
     uint16_t * ptrSnsRawHistoryLocal = ptrSnsRawHistory;
 
     #if (CY_CAPSENSE_REGULAR_RC_MEDIAN_FILTER_EN || CY_CAPSENSE_PROX_RC_MEDIAN_FILTER_EN)
-        if (0u != (CY_CAPSENSE_RC_FILTER_MEDIAN_EN_MASK & rawFilterCfg))
+        if(0u != (CY_CAPSENSE_RC_FILTER_MEDIAN_EN_MASK & rawFilterCfg))
         {
             Cy_CapSense_RunMedianInternal(ptrWdConfig, ptrSnsContext, ptrSnsRawHistoryLocal);
             ptrSnsRawHistoryLocal += CY_CAPSENSE_RC_MEDIAN_SIZE;
@@ -918,7 +873,7 @@ void Cy_CapSense_FtRunEnabledFiltersInternal(
     #endif
 
     #if (CY_CAPSENSE_REGULAR_RC_IIR_FILTER_EN || CY_CAPSENSE_PROX_RC_IIR_FILTER_EN)
-        if (0u != (CY_CAPSENSE_RC_FILTER_IIR_EN_MASK & rawFilterCfg))
+        if(0u != (CY_CAPSENSE_RC_FILTER_IIR_EN_MASK & rawFilterCfg))
         {
             Cy_CapSense_RunIIRInternal(ptrWdConfig, ptrSnsContext, ptrSnsRawHistoryLocal, ptrSnsRawHistoryLow);
             ptrSnsRawHistoryLocal += CY_CAPSENSE_RC_IIR_SIZE;
@@ -928,7 +883,7 @@ void Cy_CapSense_FtRunEnabledFiltersInternal(
     #endif
 
     #if (CY_CAPSENSE_REGULAR_RC_AVERAGE_FILTER_EN || CY_CAPSENSE_PROX_RC_AVERAGE_FILTER_EN)
-        if (0u != (CY_CAPSENSE_RC_FILTER_AVERAGE_EN_MASK & rawFilterCfg))
+        if(0u != (CY_CAPSENSE_RC_FILTER_AVERAGE_EN_MASK & rawFilterCfg))
         {
             Cy_CapSense_RunAverageInternal(ptrWdConfig, ptrSnsContext, ptrSnsRawHistoryLocal);
         }
@@ -1045,7 +1000,7 @@ uint32_t Cy_CapSense_FtJitter(uint32_t input, uint32_t prevOutput)
 }
 #endif /*(CY_CAPSENSE_DISABLE != CY_CAPSENSE_POS_JITTER_FILTER_EN)*/
 
-#endif /* (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3) || defined(CY_IP_M0S8MSCV3LP)) */
+#endif /* (defined(CY_IP_MXCSDV2) || defined(CY_IP_M0S8CSDV2) || defined(CY_IP_M0S8MSCV3)) */
 
 
 /* [] END OF FILE */

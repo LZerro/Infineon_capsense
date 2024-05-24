@@ -1,13 +1,13 @@
 /***************************************************************************//**
 * \file cy_capsense_lib.h
-* \version 5.0
+* \version 3.0
 *
 * \brief
 * The file contains application programming interface to the CAPSENSE&trade; library.
 *
 ********************************************************************************
 * \copyright
-* Copyright 2018-2024, Cypress Semiconductor Corporation (an Infineon company)
+* Copyright 2018-2021, Cypress Semiconductor Corporation (an Infineon company)
 * or an affiliate of Cypress Semiconductor Corporation. All rights reserved.
 * You may use this file only in accordance with the license, terms, conditions,
 * disclaimers, and limitations in the end user license agreement accompanying
@@ -76,9 +76,9 @@ typedef struct
 } cy_stc_capsense_advanced_centroid_config_t;
 
 /** Declares position structure that keep information of a single touch.
-* Depending on a widget type each structure field keeps the following 
+* Depending on a widget type each structure field keeps the following
 * information:
-* 
+*
 * <table class="doxtable">
 *   <tr>
 *     <th>Structure Field</th>
@@ -106,9 +106,7 @@ typedef struct
 *     <td>Reserved</td>
 *     <td>Reserved</td>
 *     <td>Reserved</td>
-*     <td>MSB = Age of touch; LSB = Z-value represents a touch strength (summ of sensor diff counts divided by 16
-*        that form 3x3 matrix with a local maximum in the center). It is not used by Middleware, however can be
-*        re-used by users to define a touch shape or a finger size.</td>
+*     <td>MSB = Age of touch; LSB = Z-value</td>
 *   </tr>
 *   <tr>
 *     <td>id</td>
@@ -130,95 +128,15 @@ typedef struct
 /** Declares touch structure used to store positions of Touchpad, Matrix buttons and Slider widgets */
 typedef struct
 {
-    cy_stc_capsense_position_t * ptrPosition;       /**< Pointer to the array containing the position information. 
+    cy_stc_capsense_position_t * ptrPosition;       /**< Pointer to the array containing the position information.
                                                          A number of elements is defined by numPosition. */
     uint8_t numPosition;                            /**< Total number of detected touches on a widget:
-                                                    *    * 0 - no touch is detected 
+                                                    *    * 0 - no touch is detected
                                                     *    * 1 - a single touch is detected
                                                     *    * 2 - two touches are detected
                                                     *    * 3 - three touches are detected
-                                                    *    * CY_CAPSENSE_POSITION_MULTIPLE - multiple touches are detected 
+                                                    *    * CY_CAPSENSE_POSITION_MULTIPLE - multiple touches are detected
                                                     *        and information in position structure should be ignored.
-                                                    *
-                                                    * The below table specifies a number of touches could be reported for a specific widget.
-                                                    * <table class="doxtable">
-                                                    *    <tr>
-                                                    *      <th colspan="2">CAPSENSE</th>
-                                                    *      <th colspan="5">Number of positions</th>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *       <td>Sensing method</td>
-                                                    *       <td>Widget type</td>
-                                                    *       <td>0</td>
-                                                    *       <td>1</td>
-                                                    *       <td>2</td>
-                                                    *       <td>&emsp;&emsp;3&emsp;&emsp;</td>
-                                                    *       <td>Multiple</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td rowspan="6">CSD</td>
-                                                    *      <td>Button</td>
-                                                    *      <td rowspan="10">&emsp;No touch&emsp; <br> &emsp;detected&emsp;</td>
-                                                    *      <td colspan="3">Number of active sensors <br> (up to number of sensors)</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Matrix button</td>
-                                                    *      <td>Single touch <br> detected</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>Multiple touches <br>  detected</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Linear slider</td>
-                                                    *      <td>Single touch <br> detected</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Radial slider</td>
-                                                    *      <td>Single touch <br> detected</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Touchpad</td>
-                                                    *      <td>Single touch <br> detected</td>
-                                                    *      <td>Two touches <br> detected</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>Multiple touches <br> detected</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Proximity</td>
-                                                    *      <td colspan="3">Number of active sensors <br> (up to number of sensors)</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td rowspan="4">CSX</td>
-                                                    *      <td>Button</td>
-                                                    *      <td colspan="3">Number of active sensors <br> (up to number of sensors)</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Matrix button</td>
-                                                    *      <td colspan="3">Number of active sensors <br> (up to number of sensors)</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Linear slider</td>
-                                                    *      <td>Single touch <br> detected</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    *    <tr align="center">
-                                                    *      <td>Touchpad</td>
-                                                    *      <td colspan="3">Number of touches <br> (up to 3)</td>
-                                                    *      <td>N/A</td>
-                                                    *    </tr>
-                                                    * </table>
                                                     */
 } cy_stc_capsense_touch_t;
 
@@ -228,7 +146,7 @@ typedef struct
     uint32_t sensorCap;                             /**< Sensor parasitic capacitance in fF 10^-15 */
     uint32_t iDacGain;                              /**< IDAC gain in pA */
     uint16_t * ptrSenseClk;                         /**< Pointer to SnsClk divider */
-    uint16_t * sigPFC;                              /**< Pointer to sigPFC value (75% of Signal Per Finger Capacitance) */
+    uint16_t * sigPFC;                              /**< Pointer to sigPFC value (Signal Per Finger Capacitance) */
     uint16_t snsClkConstantR;                       /**< Resistance in series to a sensor */
     uint16_t vRef;                                  /**< Vref in mVolts  */
     uint16_t fingerCap;                             /**< Finger capacitance in fF 10^-15 (Set in Basic tab in pF 10^-12) */
@@ -250,8 +168,8 @@ typedef struct
     uint16_t kRef0;                                 /**< Base sense frequency */
     uint16_t kRef1;                                 /**< Final sense frequency */
     uint16_t fingerCap;                             /**< Finger capacitance in fF 10^-15 (Set in Basic tab in pF 10^-12) */
-    uint16_t sigPFC;                                /**< sigPFC value (75% of signal Per Finger Capacitance) */
-    uint8_t refCdac;                                /**< Reference CAP DAC code for getting capacitance and calibration target for getting Nsub */
+    uint16_t sigPFC;                                /**< sigPFC value (Signal Per Finger Capacitance) */
+    uint8_t refCdac;                                /**< Reference CAP DAC code */
     uint8_t correctionCoeff;                        /**< Correction coefficient for CTRL_MUX mode */
 } cy_stc_capsense_hw_smartsense_config_t;
 
@@ -362,7 +280,7 @@ typedef struct
 *
 *******************************************************************************/
 void Cy_CapSense_AdaptiveFilterInitialize_Lib(
-                const cy_stc_capsense_adaptive_filter_config_t * config, 
+                const cy_stc_capsense_adaptive_filter_config_t * config,
                 cy_stc_capsense_position_t * context);
 
 /*******************************************************************************
@@ -371,9 +289,12 @@ void Cy_CapSense_AdaptiveFilterInitialize_Lib(
 *
 * This function runs the Adaptive Filter algorithm for the centroid position.
 *
+* Equation: result = ((k * curPos) + ((divisor-k) * prevPos)) / divisor
+* where k is adaptive coefficient.
+*
 * The function supposes that the filter history is updated at first touch
 * outside of the library. I.e. at the first touchdown the filter history has
-* to be initialized by touch positions before calling this function.
+* be initialized by touch positions before calling this function.
 *
 * \param config
 * The pointer to the configuration structure of the Adaptive Filter.
@@ -390,8 +311,8 @@ void Cy_CapSense_AdaptiveFilterInitialize_Lib(
 *******************************************************************************/
 void Cy_CapSense_AdaptiveFilterRun_Lib(
                 const cy_stc_capsense_adaptive_filter_config_t * config,
-                cy_stc_capsense_position_t * context, 
-                uint32_t * currentX, 
+                cy_stc_capsense_position_t * context,
+                uint32_t * currentX,
                 uint32_t * currentY);
 
 /*******************************************************************************
@@ -438,7 +359,7 @@ void Cy_CapSense_AdvancedCentroidGetTouchCoordinates_Lib(
 *
 *******************************************************************************/
 void Cy_CapSense_BallisticMultiplier_Lib(
-                const cy_stc_capsense_ballistic_config_t * config, 
+                const cy_stc_capsense_ballistic_config_t * config,
                 const cy_stc_capsense_touch_t * touch,
                 cy_stc_capsense_ballistic_delta_t * displacement,
                 uint32_t timestamp,
@@ -464,9 +385,9 @@ void Cy_CapSense_BallisticMultiplier_Lib(
 *
 *******************************************************************************/
 void Cy_CapSense_AlpRun_Lib(
-                cy_stc_capsense_alp_fltr_channel_t * ptrFilterObj, 
+                cy_stc_capsense_alp_fltr_channel_t * ptrFilterObj,
                 const cy_stc_capsense_alp_fltr_config_t * ptrFilterConfig,
-                uint16_t * rawCount, 
+                uint16_t * rawCount,
                 const uint16_t * baseline);
 
 /*******************************************************************************
@@ -483,7 +404,7 @@ void Cy_CapSense_AlpRun_Lib(
 *
 *******************************************************************************/
 void Cy_CapSense_AlpInitialize_Lib(
-                cy_stc_capsense_alp_fltr_channel_t * ptrFilterObj, 
+                cy_stc_capsense_alp_fltr_channel_t * ptrFilterObj,
                 const uint16_t * rawCount);
 
 /*******************************************************************************
@@ -521,10 +442,19 @@ uint32_t Cy_CapSense_AlpGetAverage_Lib(
 *
 * This internal function tunes the Sense Clock divider.
 *
+* Found IDAC code in Single IDAC mode is used to calculate the optimal SnsClk.
+* The SnsClk divider is set to meet the requirement that the widget
+* clock period should be greater than or equal to:
+* Period > 2*5*R*Cp,
+* where:
+* * Cp is the maximum sensor parasitic capacitance within the widget.
+* * R is the user input value in the expression view of the customizer for a
+*   series resistor.
+*
 * \param config
 * The configuration structure.
 *
-* \return 
+* \return
 * Cp in fF (10^-15)
 *
 *******************************************************************************/
@@ -537,13 +467,24 @@ uint32_t Cy_CapSense_TunePrescalers_Lib(
 *
 * Configure scanning resolution to achieve the sufficient sensitivity.
 *
-* This function requires non-zero Modulator IDAC code (if IDAC is equal to zero it 
+* The function searches the lowest possible resolution that produces signal
+* greater than 50 counts (Difference Counts) for user defined finger capacitance.
+* In addition, function calculates 75%-value of the achieved signal, that becomes
+* candidate to finger threshold.
+*
+* Used equation to calculate signal at resolution 16-bit:
+* sigPFCmax = (2^16-1) * vRef * snsClk * fingerCap / idacCurrent
+*
+* sigPFCmax contains absolute number of difference counts that user receives as
+* result of sensor scanning at corresponding resolution.
+*
+* This function requires non-zero Modulator IDAC code (if IDAC is equal to zero it
 * is considered as non-valid use case).
 *
 * \param config
 * The configuration structure.
 *
-* \return 
+* \return
 * Scan resolution
 *
 *******************************************************************************/
@@ -555,6 +496,9 @@ uint8_t Cy_CapSense_TuneSensitivity_Lib(
 ****************************************************************************//**
 *
 * Returns capacitance that corresponds to the provided parameters.
+*
+* Calculates sensor capacitance as follows:
+*     Cp = Raw * RefCDAC / Nsub0
 *
 * \param autoTuneConfig
 * The configuration structure.
@@ -572,6 +516,9 @@ uint32_t Cy_CapSense_GetSmartSenseCapacitance(
 *
 * Returns minimum sense clock divider.
 *
+* Calculates minimal sense clock divider as follows:
+*     Kref = 4 * 5tau * Fmod * R * Cp
+*
 * \param autoTuneConfig
 * The configuration structure.
 *
@@ -587,6 +534,9 @@ uint32_t Cy_CapSense_GetSmartSenseFrequencyDivider(
 ****************************************************************************//**
 *
 * Returns optimum number of sub-conversions.
+*
+* Calculates number of sub-conversions as follows:
+*     Nsub = RoundUp(minRaw * RefCDAC * kRef0 /(sigPFC * kRef1)
 *
 * \param autoTuneConfig
 * The configuration structure.
@@ -607,16 +557,16 @@ uint32_t Cy_CapSense_GetSmartSenseNumSubconversions(
 * This function comprises an algorithm of thresholds auto-tune. The thresholds
 * object contains updated thresholds after this API is called.
 *
-* \param ptrNoiseEnvelope 
+* \param ptrNoiseEnvelope
 * The pointer to the noise-envelope object in RAM.
 *
-* \param ptrThresholds    
+* \param ptrThresholds
 * The pointer to the thresholds object.
 *
-* \param sigPFC           
+* \param sigPFC
 * Signal per finger capacitance.
 *
-* \param startFlag           
+* \param startFlag
 * The flag indicates a first sensor in a widget.
 *
 *******************************************************************************/
@@ -632,13 +582,13 @@ void Cy_CapSense_UpdateThresholds_Lib(
 *
 * Initializes the noise-envelope filter.
 *
-* \param rawCount         
+* \param rawCount
 * The RawCount value for a given sensor.
 *
-* \param sigPFC           
+* \param sigPFC
 * Signal per finger capacitance.
 *
-* \param ptrNoiseEnvelope 
+* \param ptrNoiseEnvelope
 * The pointer to the noise-envelope RAM object of the sensor.
 *
 *******************************************************************************/
@@ -653,13 +603,13 @@ void Cy_CapSense_InitializeNoiseEnvelope_Lib(
 *
 * Runs the noise-envelope filter.
 *
-* \param rawCount         
+* \param rawCount
 * The RawCount value for a given sensor.
 *
-* \param sigPFC           
+* \param sigPFC
 * Signal per finger capacitance.
 *
-* \param ptrNoiseEnvelope 
+* \param ptrNoiseEnvelope
 * The pointer to the noise-envelope RAM object of the sensor.
 *
 *******************************************************************************/
